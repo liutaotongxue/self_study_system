@@ -37,11 +37,19 @@ def _start(document_id: int, chapter_id: str, mode: str, db: Session):
     db.add(job)
     db.commit()
     db.refresh(job)
-    # D2:start_new_session=True 起独立会话 → uvicorn --reload / 重启不杀生成子进程
+    # D2:独立会话/进程组 → uvicorn --reload / 重启不杀生成子进程。
+    # POSIX 用 start_new_session=True(setsid);Windows 用 CREATE_NEW_PROCESS_GROUP。
+    # 不可二者一起传:start_new_session 在 Win 静默忽略,创建会回到 inheriting,
+    # uvicorn 重启会连带杀子。
+    detach_kwargs = (
+        {"start_new_session": True}
+        if sys.platform != "win32"
+        else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    )
     subprocess.Popen(
         [sys.executable, str(ROOT / "scripts" / "run_generation.py"),
          "--job-id", str(job.id)],
-        cwd=str(ROOT), start_new_session=True,
+        cwd=str(ROOT), **detach_kwargs,
     )
     return {"job_id": job.id, "status": "queued", "mode": mode, "chapter_id": chapter_id}
 

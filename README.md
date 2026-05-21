@@ -26,6 +26,7 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 | [uv](https://docs.astral.sh/uv/) | 依赖管理 |
 | 一个或多个 LLM provider 的 API key | 详见下方 |
 | 一台现代浏览器 | viewer 前端 |
+| **Windows 用户**:[Git for Windows](https://git-scm.com/download/win) | 自带 Git Bash,跑下方 `bash` 脚本(macOS/Linux 已内置 bash,跳过) |
 
 项目通过 LangChain 抽象层接入 LLM,在 `.env` 配置你要用的 provider key:
 
@@ -37,6 +38,8 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 ---
 
 ## 一次性安装
+
+macOS / Linux 用终端;Windows 用 **Git Bash**(Git for Windows 自带,右键开始菜单 → Git Bash)。
 
 ```bash
 git clone https://github.com/liutaotongxue/self_study_system.git
@@ -59,7 +62,7 @@ bash run.sh
 # 浏览器打开 http://localhost:8000/
 ```
 
-`run.sh` 绑 `127.0.0.1:8000`,**不暴露网络**(单机单用户)。
+`run.sh` 绑 `127.0.0.1:8000`,**不暴露网络**(单机单用户)。三平台命令完全相同。
 
 ---
 
@@ -140,7 +143,11 @@ uv run alembic upgrade head
 项目完全自包含,卸载只需删目录:
 
 ```bash
+# macOS / Linux / Git Bash
 rm -rf self_study_system
+
+# Windows PowerShell
+Remove-Item -Recurse -Force self_study_system
 ```
 
 所有数据(`app.db`、`.env`、`.venv/`、`uploads/`)都在项目目录内,一并清除。**不会**残留任何系统级文件、服务或全局包。
