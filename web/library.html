@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Self-Learning Agent · 书库</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
+         color:#222; background:#f7f7f7; }
+  header { background:#1F3864; color:#fff; padding:18px 28px; }
+  header h1 { margin:0; font-size:20px; }
+  main { max-width:900px; margin:0 auto; padding:24px 28px; }
+  .sec { background:#fff; border:1px solid #e3e3e3; border-radius:6px;
+         padding:18px 20px; margin-bottom:20px; }
+  .sec h2 { margin:0 0 12px; font-size:15px; color:#1F3864;
+            text-transform:uppercase; letter-spacing:.5px; }
+  .ph-btn { padding:8px 14px; font-size:13px; border:1px dashed #bbb;
+            border-radius:5px; background:#fafafa; color:#999; cursor:not-allowed; }
+  .ph-note { font-size:12px; color:#999; margin-top:8px; }
+  .book { display:flex; align-items:baseline; gap:12px; padding:11px 12px;
+          border:1px solid transparent; border-radius:5px; text-decoration:none;
+          color:#222; }
+  .book:hover { background:#f0f4fa; border-color:#cdd9ec; }
+  .book .t { flex:1; font-weight:600; color:#1F3864; }
+  .book .m { font-size:12px; color:#888; }
+  .empty { color:#888; font-size:14px; line-height:1.7; }
+  .empty code { background:#eee; padding:1px 5px; border-radius:3px; }
+</style>
+</head>
+<body>
+<header><h1>Self-Learning Agent</h1></header>
+<main>
+
+  <div class="sec">
+    <h2>上传书籍</h2>
+    <input id="up-file" type="file" accept="application/pdf,.pdf">
+    <div class="ph-note" id="up-status">选一个 PDF 即上传(仅登记,不立即解析)。完成后出现在下方书库显「未处理」;点「处理本书」才整本切块。</div>
+  </div>
+
+  <div class="sec">
+    <h2>书库</h2>
+    <div id="books">加载中…</div>
+    <div class="ph-note" id="proc-status"></div>
+  </div>
+
+  <div class="sec">
+    <h2>AI 助手</h2>
+    <div class="ph-note">(占位 · 后续支持)</div>
+  </div>
+
+</main>
+<script>
+const _ust = () => document.getElementById('up-status');
+const _pst = () => document.getElementById('proc-status');
+
+function bookRow(d) {
+  const del = `<button class="del-btn" data-id="${d.id}"
+       style="padding:5px 10px;font-size:12px;cursor:pointer;color:#C00000">🗑 删除</button>`;
+  const toc = `<button class="toc-btn" data-id="${d.id}"
+       style="padding:5px 10px;font-size:12px;cursor:pointer">📑 标注目录</button>`;
+  // 状态标签 = has_structure 主信号(已标目录 / 未标目录);未处理 = 上传后既无
+  // structure 又非 ready 的 legacy 态。页数 / status / id 不再露出。
+  const statusLabel = d.has_structure
+    ? '<span class="m" style="color:#1F3864">✓ 已标注目录</span>'
+    : (d.status === 'ready'
+       ? '<span class="m" style="color:#888">○ 未标注目录</span>'
+       : '<span class="m" style="color:#C00000">⚠ 未处理</span>');
+  if (d.status === 'ready') {
+    return `<a class="book" href="/viewer?doc=${d.id}">
+       <span class="t">${d.title || ('document ' + d.id)}</span>
+       ${statusLabel}
+       ${toc}
+       ${del}
+     </a>`;
+  }
+  return `<div class="book" style="cursor:default">
+       <span class="t">${d.title || ('document ' + d.id)}</span>
+       ${statusLabel}
+       <button class="proc-btn" data-id="${d.id}"
+         style="padding:5px 12px;font-size:12px;cursor:pointer">处理本书</button>
+       ${toc}
+       ${del}
+     </div>`;
+}
+
+function loadBooks() {
+  return fetch('/documents').then(r => r.json()).then(docs => {
+    const el = document.getElementById('books');
+    if (!Array.isArray(docs) || docs.length === 0) {
+      el.innerHTML = '<div class="empty">还没有书。上方选一个 PDF 上传即可开始。</div>';
+      return;
+    }
+    el.innerHTML = docs.map(bookRow).join('');
+    el.querySelectorAll('.proc-btn').forEach(b =>
+      b.addEventListener('click', () => startProcess(b.getAttribute('data-id'), b)));
+    el.querySelectorAll('.del-btn').forEach(b =>
+      b.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();          // 别触发 ready 行的 <a> 跳转
+        const row = b.closest('.book');
+        const title = row ? row.querySelector('.t').textContent.trim()
+                          : ('document ' + b.getAttribute('data-id'));
+        delBook(b.getAttribute('data-id'), title);
+      }));
+    el.querySelectorAll('.toc-btn').forEach(b =>
+      b.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();          // 别触发 ready 行的 <a> 跳转
+        startExtractStructure(b.getAttribute('data-id'), b);
+      }));
+  }).catch(e => {
+    document.getElementById('books').innerHTML =
+      '<div class="empty" style="color:#C00000">书库加载失败:' + e.message +
+      '<br>确认 uvicorn 在跑。</div>';
+  });
+}
+loadBooks();
+
+// 选文件即上传:仅登记,不解析(无领域名、无按钮)
+document.getElementById('up-file').addEventListener('change', (ev) => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('file', f);
+  _ust().textContent = '上传中…';
+  fetch('/upload', { method: 'POST', body: fd }).then(async r => {
+    const b = await r.json().catch(() => ({}));
+    ev.target.value = '';                       // 清空 → 同名文件可再次触发 change
+    if (!r.ok) {
+      _ust().innerHTML = '<span style="color:#C00000">✕ ' +
+        (b.detail || ('HTTP ' + r.status)) + '</span>';
+      return;
+    }
+    _ust().textContent = '✓ 已上传:' + (b.title || ('document ' + b.document_id)) +
+      ' —— 在下方书库点「处理本书」开始解析。';
+    loadBooks();
+  }).catch(e => {
+    ev.target.value = '';
+    _ust().innerHTML = '<span style="color:#C00000">✕ 上传失败:' + e.message + '</span>';
+  });
+});
+
+function delBook(docId, title) {
+  if (!confirm('确定删除《' + title + '》?\n将永久删除其笔记/图谱/题目/分块' +
+               '(若为上传书,其 PDF 文件一并删),不可恢复。')) return;
+  _pst().textContent = '删除中…';
+  fetch('/documents/' + docId, { method: 'DELETE' }).then(async r => {
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      _pst().innerHTML = '<span style="color:#C00000">✕ ' +
+        (b.detail || ('HTTP ' + r.status)) + '</span>' +
+        (r.status === 409 ? '(处理中,结束后再删)' : '');
+      return;
+    }
+    const x = b.deleted || {};
+    _pst().textContent = '✓ 已删除 doc ' + docId + ':图谱节点 ' + (x.kg_nodes || 0) +
+      '/边 ' + (x.kg_edges || 0) + '、笔记 ' + (x.notes || 0) + '、题 ' +
+      (x.questions || 0) + '、分块 ' + (x.chunks || 0) +
+      (b.file_removed ? '、PDF 已删' : '、外部 PDF 保留') + '。';
+    loadBooks();
+  }).catch(e => {
+    _pst().innerHTML = '<span style="color:#C00000">✕ 删除失败:' + e.message + '</span>';
+  });
+}
+
+function _pollProcess(jobId, docId) {
+  fetch('/generation-jobs/' + jobId).then(r => r.json()).then(j => {
+    if (j.status === 'done') {
+      _pst().textContent = '✓ 处理完成。';
+      loadBooks();
+    } else if (j.status === 'failed') {
+      _pst().innerHTML = '<span style="color:#C00000">✕ 处理失败(doc ' + docId + '):' +
+        ((j.detail || '(无详情)').split('\n')[0]) + '</span>' +
+        '<br>非标准结构教材常在 TOC/章节检测阶段失败(loud 正确行为,非崩溃)。';
+      loadBooks();
+    } else {
+      _pst().textContent = '处理中…(整本切块,约数十秒,勿关本页)';
+      setTimeout(() => _pollProcess(jobId, docId), 3000);
+    }
+  }).catch(() => setTimeout(() => _pollProcess(jobId, docId), 3000));
+}
+
+function startProcess(docId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
+  _pst().textContent = '处理中…(整本切块,约数十秒,勿关本页)';
+  fetch('/documents/' + docId + '/process', { method: 'POST' }).then(async r => {
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      _pst().innerHTML = '<span style="color:#C00000">✕ ' +
+        (b.detail || ('HTTP ' + r.status)) + '</span>' +
+        (r.status === 409 ? '(一次一个,等当前任务结束再点)' : '');
+      if (btn) { btn.disabled = false; btn.textContent = '处理本书'; }
+      return;
+    }
+    _pollProcess(b.job_id, docId);
+  }).catch(e => {
+    _pst().innerHTML = '<span style="color:#C00000">✕ ' + e.message + '</span>';
+    if (btn) { btn.disabled = false; btn.textContent = '处理本书'; }
+  });
+}
+
+function startExtractStructure(docId, btn) {
+  const toc = prompt('该书目录在 PDF 的第几页?(物理页号,如 7-10 或 7,8,9)\n' +
+    '需先用 PDF 阅读器看一眼目录在第几物理页。');
+  if (!toc || !toc.trim()) return;
+  const force = confirm('该书若已抽过结构:\n确定 = 强制重抽并覆盖;' +
+    '取消 = 保留已有(跳过)。\n首次抽取两者等价。');
+  if (btn) { btn.disabled = true; btn.textContent = '抽取中…'; }
+  _pst().textContent = '抽取章节结构中…(视觉单次 LLM,约 3-5 分钟,勿关本页)';
+  fetch('/documents/' + docId + '/extract-structure?toc=' +
+        encodeURIComponent(toc.trim()) + '&force=' + (force ? 'true' : 'false'),
+        { method: 'POST' }).then(async r => {
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      _pst().innerHTML = '<span style="color:#C00000">✕ ' +
+        (b.detail || ('HTTP ' + r.status)) + '</span>' +
+        (r.status === 409 ? '(一次一个任务,等当前结束再试)' : '');
+      if (btn) { btn.disabled = false; btn.textContent = '📑 标注目录'; }
+      return;
+    }
+    _pollProcess(b.job_id, docId);
+  }).catch(e => {
+    _pst().innerHTML = '<span style="color:#C00000">✕ ' + e.message + '</span>';
+    if (btn) { btn.disabled = false; btn.textContent = '📑 标注目录'; }
+  });
+}
+</script>
+</body>
+</html>

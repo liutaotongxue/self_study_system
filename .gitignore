@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.egg
+
+# Env & secrets
+.env
+.env.local
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend (Phase 1D)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Uploads (P2:网页上传的 PDF,不入库)
+uploads/
+
+# Claude Code 本地配置(权限/项目内 settings)
+.claude/
+
+# 开发过程产物 / 学习笔记 / 衍生题目(本地保留,不入开源)
+RETROSPECTIVE.md
+docs/
+all_questions.md
+fixtures/
+hermes-study/
+ANTHROPIC_AGENT_REFS.md
+frontend/
+
+# stray
+--domain
+
+# Phase 开发烟测 / probe / seed(retired,本地保留,不入开源)
+scripts/phase_1b7_verify.py
+scripts/seed_structure_task.py
+scripts/seed_task.py
+scripts/smoke_runner.py
+scripts/smoke_runner_pdf.py
+scripts/smoke_api.py
+scripts/smoke_eval.py
+scripts/smoke_policy_denied.py
+scripts/smoke_agent_single.py
+scripts/smoke_agent_loop_manual.py
+scripts/smoke_agent_graph.py
+scripts/smoke_agent_stream.py
+scripts/smoke_test_anthropic.py
+scripts/smoke_test_langchain.py
+scripts/probe_kg_extract.py
+scripts/eval_checkpointer.py
+scripts/freeze_structure.py
+scripts/load_fixture.py

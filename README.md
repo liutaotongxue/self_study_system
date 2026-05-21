@@ -1,61 +1,146 @@
 # Self-Learning Agent
 
-Clone 下来本地跑、在网页上把 PDF 教材学成知识图谱 / 笔记 / 题目的**单用户**工具。
-项目历史与设计决策见 `RETROSPECTIVE.md`。
+把 PDF 教材本地一键学成**知识图谱 / Markdown 笔记**的单用户 Web 工具。
+clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一键生成可视化 KG + 可阅读 Notes。
 
-## Prerequisites
+---
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/)
-- 一个 Anthropic API key
+## 它能做什么
 
-## Setup(只跑一次)
+- 📚 **上传 PDF**:你的教材本地保存(不入 git)
+- 🗂 **抽目录**:你选目录所在页,LLM 一发抽出全书章节结构
+- 📑 **章节 OCR**:你选某节内容页,视觉模型(Gemini 2.5-flash)OCR 出 markdown
+- 📝 **生成笔记**:Claude(sonnet-4-6)按内容生成 markdown 学习笔记(支持 LaTeX 公式)
+- 🕸 **构建知识图谱**:从笔记抽出 concepts + relations,vis-network 可视化
+- 📥 **导出 Notes**:一键下载 zip(一节一 `.md`,Obsidian / Typora 友好)
+
+每一步都在网页里点;终端只为安装。
+
+---
+
+## 前置要求
+
+| 工具 | 用途 |
+|---|---|
+| Python ≥ 3.11 | 后端运行时 |
+| [uv](https://docs.astral.sh/uv/) | 依赖管理 |
+| Anthropic API key | S2 抽结构 / S5 笔记 + KG agent([注册](https://console.anthropic.com/)) |
+| Google API key (Gemini) | S4 视觉 OCR([注册](https://aistudio.google.com/app/apikey)) |
+| 一台现代浏览器 | viewer 前端 |
+
+> ⚠️ **Anthropic API key 与 Claude Max / Pro 订阅完全无关**。Max 覆盖 claude.ai 和 Claude Code 网页/桌面端,API 调用按 token 单独计费。
+
+---
+
+## 一次性安装
 
 ```bash
-git clone <repo-url> && cd self-learning-agent
+git clone https://github.com/liutaotongxue/self_study_system.git
+cd self_study_system
 bash setup.sh
-# 按提示编辑 .env,填 ANTHROPIC_API_KEY
+# 按提示编辑 .env,填 ANTHROPIC_API_KEY 和 GOOGLE_API_KEY
 ```
 
-## Run
+`setup.sh` 会:
+1. `uv sync` 安装依赖
+2. 复制 `.env.example` → `.env`(若不存在)
+3. `alembic upgrade head` 建本地 SQLite DB
+
+---
+
+## 启动
 
 ```bash
 bash run.sh
 # 浏览器打开 http://localhost:8000/
 ```
 
-之后全部操作(上传书、生成图谱、学习)都在网页里;终端只用于上面这一次安装。
+`run.sh` 绑 `127.0.0.1:8000`,**不暴露网络**(单机单用户)。
 
-> 数据是你本地的:`app.db` 等不入 git(`.gitignore` 已含 `*.db`),各人一份本地实例。
+---
 
-## 重要提示
+## 使用流程
 
-- **ANTHROPIC_API_KEY 与 Claude Max 订阅无关**。Max 覆盖 claude.ai 和 Claude Code,API 调用单独计费。
-- **不要把 `app.db` / `.env` commit 到 git**。`.gitignore` 已配置。
-- **LangGraph / LangChain 版本 pin 死**。只用 LangGraph + 少量 LangChain Core,不引入 LangChain 主仓。
+| 步 | 在哪 | 做什么 |
+|---|---|---|
+| 1 | 主页 `/` | 上传 PDF(只登记,不解析) |
+| 2 | viewer `/index.html?doc=N` → 章节状态 | 输入目录所在页(如 `7-10`)→ LLM 抽全书结构 |
+| 3 | 章节状态页 | 给某节填内容页(如 `28-35`)→ 缩略图预览确认 → Gemini OCR + 切块 |
+| 4 | 章节状态页 | 点「生成」→ Claude 出 markdown 笔记 + KG |
+| 5 | viewer | 看图、点节点读笔记、导出 Notes zip |
 
-## Development
+---
 
-贡献者 / 开发用(产品用户不需要):
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 后端 | FastAPI + SQLAlchemy 2.0 + Alembic + SQLite |
+| LLM 编排 | LangGraph 1.x + langchain-anthropic 1.x + langchain-google-genai 4.x |
+| 视觉 OCR | Gemini 2.5-flash(`safety_settings=BLOCK_NONE`) |
+| 文本/KG | Claude Sonnet 4.6 |
+| PDF 处理 | pymupdf |
+| 前端 | 原生 HTML/JS + marked(markdown) + KaTeX(数学公式) + vis-network(KG) |
+
+零打包 / 零构建步骤——前端就是 3 个静态 HTML 文件。
+
+---
+
+## 项目结构
+
+```
+self-learning-agent/
+├── setup.sh / run.sh           安装 + 启动
+├── pyproject.toml              依赖声明
+├── alembic/ + alembic.ini      DB schema 迁移链
+├── src/sla/                    后端源码
+│   ├── api/                    FastAPI 路由
+│   ├── models/                 SQLAlchemy 模型
+│   ├── harness/                LangGraph agent harness + KG 抽取
+│   ├── parsing/                PDF 渲染 / TOC / 内容 OCR
+│   └── runtime/                runner / task / event
+├── web/                        前端(index.html / library.html / process.html)
+├── scripts/                    CLI 工具(ingest / study_book / build_kg / ...)
+└── tests/                      pytest 测试
+```
+
+数据在本地:`app.db`(SQLite) + 用户原 PDF 的绝对路径,都不入 git。
+
+---
+
+## 开发
 
 ```bash
-uv sync
-cp .env.example .env            # 填 ANTHROPIC_API_KEY
+# 热重载(改码自动重启)
+uv run uvicorn sla.api.app:app --reload
+
+# 运行测试(71 tests)
+uv run pytest tests/
+
+# DB 迁移(改 model 后)
+uv run alembic revision --autogenerate -m "..."
 uv run alembic upgrade head
-uv run python scripts/load_fixture.py          # 灌金标 fixture chunks(仅 dev)
-uv run python scripts/smoke_test_anthropic.py  # 冒烟:Claude API 通路
-uv run python scripts/smoke_test_langchain.py
-uv run uvicorn sla.api.app:app --reload        # 热重载(改码自动重启)
 ```
 
-验收 / 测试:
+主要 CLI 工具(都在 `scripts/`):
 
-```bash
-curl http://localhost:8000/documents/1/chunks   # fixture 灌入后应见 chunks
-curl http://localhost:8000/tasks                 # tasks endpoint 可用
-uv run pytest tests/                             # 含 Eval-1 / O3 / O4 回归
-```
+| 脚本 | 作用 |
+|---|---|
+| `ingest_pdf.py` | 离线把 PDF 灌入 DB(网页端等价于上传 + S2 + S3) |
+| `study_book.py` | 离线给章节生成 markdown 笔记 |
+| `build_kg.py` | 离线给章节抽 KG(支持 `--clear` 防累积) |
+| `run_generation.py` | UI 触发 generation job 的执行器(后台 Popen) |
 
-金标 fixture:`fixtures/sample_chapter.json` = Sutton & Barto《RL: An Introduction》
-(2nd ed. in-progress)§1.3 的 8 段 chunks(`ch1.3`,书页 7-8),仅供 dev。
-# self_study_system
+---
+
+## License
+
+[MIT](LICENSE) © 2026 liutao
+
+---
+
+## 致谢
+
+参考过的工作:
+- [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) — LangGraph harness 设计参考
+- [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python) — content filter 诊断时直读 native API

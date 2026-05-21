@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Self-Learning Agent · KG Viewer</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked-katex-extension@5.1.4/lib/index.umd.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+               font-size: 14px; color: #222; }
+  body { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ---------- 左侧 filter ---------- */
+  #sidebar {
+    width: 240px; padding: 16px; background: #f7f7f7; border-right: 1px solid #ddd;
+    overflow-y: auto; flex-shrink: 0;
+  }
+  #sidebar h2 { margin: 0 0 6px 0; font-size: 16px; letter-spacing: .2px; }
+  #sidebar h3 {
+    margin: 22px 0 8px; font-size: 11px;
+    color: #8a93a0; text-transform: uppercase; letter-spacing: .9px;
+    font-weight: 600;
+  }
+  #stats {
+    font-size: 12px; color: #8a93a0;
+    padding-bottom: 16px; border-bottom: 1px solid #e3e6ea;
+    margin-bottom: 14px; line-height: 1.7;
+  }
+  #stats strong {
+    display: block; color: #1F3864; font-size: 13.5px;
+    margin-bottom: 4px; font-weight: 600;
+  }
+  /* 全 sidebar checkbox 统一品牌色(原 .filter-list input 仅覆盖一组,
+     现 ch-all / ch-grp-head / leaf 都自动继承品牌蓝 → 视觉统一) */
+  #sidebar input[type="checkbox"] { accent-color: #1F3864; }
+  .filter-list { display: flex; flex-direction: column; gap: 4px; }
+  .filter-list label { cursor: pointer; padding: 2px 0; }
+  .filter-list input { margin-right: 6px; vertical-align: middle; }
+  /* 4 大按钮统一(原 #notes-btn / #chap-btn,#export-btn 两规则 + #cmp-btn
+     无规则的 bug → 合并到此),padding/margin 给呼吸感 */
+  #notes-btn, #chap-btn, #cmp-btn, #export-btn {
+    width: 100%; margin: 0 0 6px; padding: 9px 12px;
+    font-size: 13px; cursor: pointer; text-align: left;
+    background: #1F3864; color: #fff; border: none; border-radius: 5px;
+    transition: background .15s;
+  }
+  #notes-btn:hover, #chap-btn:hover,
+  #cmp-btn:hover, #export-btn:hover { background: #2a4a80; }
+  #export-btn { margin-bottom: 10px; }    /* 最后一个,给后续 filter 间距 */
+  .ch-grp-head { font-size: 11px; font-weight: 600; color: #1F3864;
+    margin: 8px 0 2px; letter-spacing: .3px; cursor: pointer; }
+  .filter-list label.ch-leaf { padding-left: 14px; }
+  .ch-all { font-size: 12px; font-weight: 600; color: #1F3864;
+    padding: 2px 0 6px; border-bottom: 1px solid #e3e8f0; margin-bottom: 4px; cursor: pointer; }
+  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .legend-diamond { display: inline-block; width: 10px; height: 10px; background: #ED7D31;
+                    transform: rotate(45deg); margin-right: 6px; vertical-align: middle; }
+  .legend-triangle { display: inline-block; width: 0; height: 0;
+                     border-left: 6px solid transparent; border-right: 6px solid transparent;
+                     border-bottom: 10px solid #70AD47; margin-right: 6px; vertical-align: middle; }
+
+  /* ---------- 中间 graph ---------- */
+  #graph-wrap { flex: 1; position: relative; }
+  #graph { width: 100%; height: 100%; background: #fff; }
+  #search-box {
+    position: absolute; top: 12px; left: 12px; z-index: 10;
+    padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px;
+    width: 200px; font-size: 13px;
+  }
+
+  /* ---------- 右侧 details ---------- */
+  #details {
+    width: 460px; padding: 16px; background: #fafafa; border-left: 1px solid #ddd;
+    flex-shrink: 0; display: flex; flex-direction: column; box-sizing: border-box;
+  }
+  #node-details { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #details h3 { margin: 0 0 4px 0; font-size: 18px; }
+  .meta { font-size: 12px; color: #666; margin: 0 0 12px 0; }
+  .meta code { background: #eee; padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+  .type-badge {
+    display: inline-block; padding: 1px 8px; font-size: 11px;
+    border-radius: 10px; color: white; margin-right: 6px;
+  }
+  .type-badge.concept { background: #5B9BD5; }
+  .type-badge.method  { background: #ED7D31; }
+  .type-badge.example { background: #70AD47; }
+  .section-title { font-size: 12px; color: #555; text-transform: uppercase;
+                   letter-spacing: 0.5px; margin: 16px 0 6px 0; }
+  .note-preview {
+    background: white; padding: 12px 16px; border-radius: 4px;
+    border: 1px solid #eee; flex: 1; min-height: 0; overflow-y: auto;
+    font-size: 13px; line-height: 1.6;
+  }
+  .note-preview h1, .note-preview h2, .note-preview h3 { margin: 12px 0 6px 0; }
+  .note-preview h1 { font-size: 18px; }
+  .note-preview h2 { font-size: 15px; }
+  .note-preview h3 { font-size: 13px; }
+  .note-preview ul, .note-preview ol { padding-left: 20px; }
+  .note-preview table { border-collapse: collapse; margin: 8px 0; }
+  .note-preview th, .note-preview td { border: 1px solid #ddd; padding: 4px 8px; }
+  .edge-list { font-size: 12px; }
+  .edge-list .arrow { color: #999; padding: 0 6px; }
+  .edge-list a { color: #1F3864; cursor: pointer; text-decoration: none; }
+  .edge-list a:hover { text-decoration: underline; }
+  .placeholder { color: #999; font-style: italic; }
+  .cross-banner {
+    background: #fffbe6; border: 1px solid #ffdf6c; border-radius: 4px;
+    padding: 8px 12px; margin: 8px 0 0; font-size: 12px; color: #6c4a00;
+    line-height: 1.5;
+  }
+  .cross-banner strong { color: #4a3200; }
+
+  /* ---------- Fullscreen 阅读模式 ---------- */
+  .fs-btn {
+    cursor: pointer; padding: 3px 10px; font-size: 11px;
+    border: 1px solid #bbb; border-radius: 3px; background: white;
+    color: #444; text-transform: none; letter-spacing: 0;
+  }
+  .fs-btn:hover { background: #eef; border-color: #5B9BD5; color: #1F3864; }
+  .section-title-row {
+    display: flex; justify-content: space-between; align-items: center;
+    margin: 16px 0 6px 0;
+  }
+  .section-title-row .section-title { margin: 0; }
+
+  #fs-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #fff; z-index: 1000;
+    overflow-y: auto;
+  }
+  #fs-overlay.active { display: block; }
+  #fs-header {
+    position: sticky; top: 0; background: #fafafa;
+    padding: 12px 24px; border-bottom: 1px solid #ddd;
+    display: flex; justify-content: space-between; align-items: center;
+    z-index: 10;
+  }
+  #fs-title { font-size: 14px; color: #555; }
+  #fs-title strong { color: #222; font-size: 16px; }
+  #fs-close {
+    cursor: pointer; padding: 6px 14px; font-size: 13px;
+    border: 1px solid #bbb; border-radius: 4px; background: white;
+  }
+  #fs-close:hover { background: #fee; border-color: #C00000; color: #C00000; }
+  #fs-content {
+    max-width: 760px; margin: 0 auto; padding: 32px 24px 60px;
+    font-size: 16px; line-height: 1.8; color: #222;
+  }
+  #fs-content h1 { font-size: 26px; margin-top: 24px; }
+  #fs-content h2 { font-size: 21px; margin-top: 22px; }
+  #fs-content h3 { font-size: 17px; margin-top: 20px; }
+  #fs-content h4 { font-size: 15px; }
+  #fs-content p { margin: 14px 0; }
+  #fs-content ul, #fs-content ol { padding-left: 24px; }
+  #fs-content li { margin: 4px 0; }
+  #fs-content code { background: #f3f3f3; padding: 1px 5px; border-radius: 3px; font-size: 14px; }
+  #fs-content pre { background: #f7f7f7; padding: 12px; border-radius: 4px; overflow-x: auto; }
+  #fs-content table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+  #fs-content th, #fs-content td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+  #fs-content th { background: #f0f0f0; }
+  #fs-content blockquote {
+    border-left: 3px solid #ccc; margin: 12px 0; padding: 4px 16px;
+    color: #555; background: #fafafa;
+  }
+
+  /* ---------- 缩略图预览 modal (C-方案 $0 预览+确认步) ---------- */
+  #tp-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.5); z-index: 1100;
+    align-items: center; justify-content: center;
+  }
+  #tp-overlay.active { display: flex; }
+  #tp-modal {
+    background: white; border-radius: 6px;
+    width: 90%; max-width: 1100px; max-height: 90vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 4px 24px rgba(0,0,0,.2);
+  }
+  #tp-header {
+    padding: 12px 20px; border-bottom: 1px solid #ddd;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #tp-title { font-size: 15px; color: #222; }
+  #tp-meta { font-size: 12px; color: #666; }
+  #tp-grid {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px; background: #f7f7f7;
+  }
+  .tp-thumb { background: white; border: 1px solid #ddd; border-radius: 4px;
+              padding: 6px; }
+  .tp-thumb img { width: 100%; height: auto; display: block; }
+  .tp-thumb .tp-pg { font-size: 11px; color: #555; margin-bottom: 4px;
+                     text-align: center; font-weight: 600; }
+  #tp-actions {
+    padding: 12px 20px; border-top: 1px solid #ddd; text-align: right;
+  }
+  #tp-actions button {
+    padding: 6px 16px; font-size: 13px; margin-left: 8px;
+    border: 1px solid #bbb; border-radius: 4px; cursor: pointer; background: white;
+  }
+  #tp-confirm { background: #1F3864 !important; color: white !important;
+                border-color: #1F3864 !important; }
+  #tp-confirm:hover { background: #2a4a80 !important; }
+  #tp-cancel:hover { background: #eee; }
+
+  /* ---------- Notes 面板(独立于 KG)---------- */
+  /* #notes-btn 样式合并到顶部 sidebar 块的 4-按钮统一规则 */
+  #notes-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #fff; z-index: 999; overflow-y: auto;
+  }
+  #notes-overlay.active { display: block; }
+  #notes-header {
+    position: sticky; top: 0; background: #fafafa;
+    padding: 12px 24px; border-bottom: 1px solid #ddd;
+    display: flex; justify-content: space-between; align-items: center; z-index: 5;
+  }
+  #notes-header strong { font-size: 16px; }
+  #notes-close {
+    cursor: pointer; padding: 6px 14px; font-size: 13px;
+    border: 1px solid #bbb; border-radius: 4px; background: white;
+  }
+  #notes-close:hover { background: #fee; border-color: #C00000; color: #C00000; }
+  #notes-list { max-width: 820px; margin: 0 auto; padding: 24px; }
+  .notes-chap-group { margin-bottom: 22px; }
+  .notes-chap-head {
+    font-size: 12px; color: #555; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 1px solid #eee;
+    padding-bottom: 4px; margin-bottom: 8px;
+  }
+  .note-row {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 7px 10px; border-radius: 4px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .note-row:hover { background: #f0f4fa; border-color: #cdd9ec; }
+  .note-row .nr-chap { font-weight: 600; color: #1F3864; min-width: 64px; }
+  .note-row .nr-title { flex: 1; color: #222; }
+  .note-row .nr-meta { font-size: 11px; color: #999; }
+  .note-row .nr-badge {
+    font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    background: #fff3cd; color: #856404; border: 1px solid #ffe69c;
+  }
+  .chap-grp { margin-bottom: 14px; }
+  .chap-grp-head { font-size: 13px; font-weight: 600; color: #1F3864;
+    border-bottom: 1px solid #e3e8f0; padding: 4px 0 4px 4px; margin-bottom: 4px; }
+  .chap-row.chap-sub { padding-left: 22px; }
+
+  /* ---------- 章节状态面板(P3a)---------- */
+  /* #chap-btn / #export-btn 样式合并到顶部 sidebar 块的 4-按钮统一规则 */
+  #chap-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #fff; z-index: 999; overflow-y: auto;
+  }
+  #chap-overlay.active { display: block; }
+  #chap-header {
+    position: sticky; top: 0; background: #fafafa;
+    padding: 12px 24px; border-bottom: 1px solid #ddd;
+    display: flex; justify-content: space-between; align-items: center; z-index: 5;
+  }
+  #chap-header strong { font-size: 16px; }
+  #chap-close {
+    cursor: pointer; padding: 6px 14px; font-size: 13px;
+    border: 1px solid #bbb; border-radius: 4px; background: white;
+  }
+  #chap-close:hover { background: #fee; border-color: #C00000; color: #C00000; }
+  #chap-list { max-width: 820px; margin: 0 auto; padding: 24px; }
+  #cmp-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #fff; z-index: 1000; flex-direction: column;
+  }
+  #cmp-overlay.active { display: flex; }
+  #cmp-header {
+    background: #fafafa; padding: 12px 24px; border-bottom: 1px solid #ddd;
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  }
+  #cmp-header strong { font-size: 16px; }
+  #cmp-header select { padding: 4px 8px; font-size: 13px; }
+  #cmp-close {
+    margin-left: auto; cursor: pointer; padding: 6px 14px; font-size: 13px;
+    border: 1px solid #bbb; border-radius: 4px; background: white;
+  }
+  #cmp-close:hover { background: #fee; border-color: #C00000; color: #C00000; }
+  #cmp-body { flex: 1; min-height: 0; display: flex; }
+  #cmp-note {
+    width: 45%; overflow-y: auto; padding: 20px 28px;
+    border-right: 1px solid #ddd; font-size: 14px; line-height: 1.7;
+  }
+  #cmp-note h1 { font-size: 22px; margin-top: 18px; }
+  #cmp-note h2 { font-size: 18px; margin-top: 16px; }
+  #cmp-note h3 { font-size: 15px; margin-top: 14px; }
+  #cmp-note h4 { font-size: 14px; }
+  #cmp-note p { margin: 12px 0; }
+  #cmp-note ul, #cmp-note ol { padding-left: 22px; }
+  #cmp-note li { margin: 4px 0; }
+  #cmp-note code { background: #f3f3f3; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+  #cmp-note pre { background: #f7f7f7; padding: 12px; border-radius: 4px; overflow-x: auto; }
+  #cmp-note table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+  #cmp-note th, #cmp-note td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+  #cmp-note th { background: #f0f0f0; }
+  #cmp-note blockquote {
+    border-left: 3px solid #ccc; margin: 12px 0; padding: 4px 16px;
+    color: #555; background: #fafafa;
+  }
+  #cmp-pdf { flex: 1; border: 0; }
+  .chap-row {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 8px 10px; border-bottom: 1px solid #eee;
+  }
+  .chap-row .cr-ch { font-weight: 600; color: #1F3864; min-width: 72px; }
+  .chap-row .cr-st { color: #333; }
+  .chap-row .cr-name { flex: 1; min-width: 0; color: #555;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chap-row .cr-a { margin-left: auto; }
+  .cr-btn { font-size: 12px; padding: 3px 12px; cursor: pointer;
+            border: 1px solid #1F3864; border-radius: 4px;
+            background: #1F3864; color: #fff; }
+  .cr-btn:hover:not(:disabled) { background: #2a4a80; }
+  .cr-btn:disabled { background: #bbb; border-color: #bbb; cursor: not-allowed; }
+  .cr-fail { color: #C00000; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <a href="/" style="display:inline-block;margin-bottom:10px;color:#1F3864;
+     font-size:13px;text-decoration:none">← 返回主页</a>
+  <h2>KG Viewer</h2>
+  <div id="stats">loading…</div>
+
+  <button id="notes-btn" type="button">📄 浏览所有 Notes</button>
+  <button id="chap-btn" type="button">📊 章节状态</button>
+  <button id="cmp-btn" type="button">📖 原文对照</button>
+  <button id="export-btn" type="button">📥 导出 Notes (zip)</button>
+
+  <h3>Filter by Type</h3>
+  <div class="filter-list" id="type-filter">
+    <label><input type="checkbox" value="concept" checked>
+      <span class="legend-dot" style="background:#5B9BD5"></span> concept</label>
+    <label><input type="checkbox" value="method" checked>
+      <span class="legend-diamond"></span> method</label>
+    <label><input type="checkbox" value="example" checked>
+      <span class="legend-triangle"></span> example</label>
+  </div>
+
+  <h3>Filter by Chapter</h3>
+  <div class="filter-list" id="chapter-filter">loading…</div>
+
+  <h3>Legend (edges)</h3>
+  <div style="font-size: 12px; color: #555; line-height: 1.8;">
+    <div><span style="display:inline-block;width:30px;border-top:2px solid #1F3864;vertical-align:middle"></span> requires →</div>
+    <div><span style="display:inline-block;width:30px;border-top:2px dashed #7F7F7F;vertical-align:middle"></span> related_to ↔</div>
+    <div><span style="display:inline-block;width:30px;border-top:2px solid #C00000;vertical-align:middle"></span> contrasts_with</div>
+    <div><span style="display:inline-block;width:30px;border-top:2px solid #70AD47;vertical-align:middle"></span> example_of →</div>
+  </div>
+</div>
+
+<div id="graph-wrap">
+  <input id="search-box" type="text" placeholder="search label..." />
+  <div id="graph"></div>
+</div>
+
+<div id="details">
+  <div id="node-details" class="placeholder">点击节点查看详情</div>
+</div>
+
+<!-- Notes 面板 overlay(独立于 KG,所有 Note 一等公民入口)-->
+<div id="notes-overlay">
+  <div id="notes-header">
+    <strong>所有 Notes(按章)</strong>
+    <button id="notes-close" type="button">✕ 关闭 (ESC)</button>
+  </div>
+  <div id="notes-list">loading...</div>
+</div>
+
+<div id="chap-overlay">
+  <div id="chap-header">
+    <strong>章节状态</strong>
+    <button id="chap-close" type="button">✕ 关闭 (ESC)</button>
+  </div>
+  <div id="chap-list">loading...</div>
+</div>
+
+<div id="cmp-overlay">
+  <div id="cmp-header">
+    <strong>Note ↔ 教材原文对照</strong>
+    <select id="cmp-pick"></select>
+    <button id="cmp-close" type="button">✕ 关闭 (ESC)</button>
+  </div>
+  <div id="cmp-body">
+    <div id="cmp-note">选择章节…</div>
+    <iframe id="cmp-pdf" title="教材原文 PDF"></iframe>
+  </div>
+</div>
+
+<!-- Fullscreen 阅读 overlay -->
+<div id="fs-overlay">
+  <div id="fs-header">
+    <div id="fs-title">loading...</div>
+    <button id="fs-close" type="button">✕ 退出 (ESC)</button>
+  </div>
+  <div id="fs-content">loading...</div>
+</div>
+
+<!-- C-方案 $0 预览-确认 modal:付费 OCR 前看页对不对 -->
+<div id="tp-overlay">
+  <div id="tp-modal">
+    <div id="tp-header">
+      <span id="tp-title">页预览</span>
+      <span id="tp-meta"></span>
+    </div>
+    <div id="tp-grid">loading…</div>
+    <div id="tp-actions">
+      <button id="tp-cancel" type="button">取消</button>
+      <button id="tp-confirm" type="button">确认抽取</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// marked-katex-extension:解析层 claim $...$ / $$...$$,绕过 marked emphasis 啃 _ 的问题。
+// nonStandard:允许 $...$ 内空格/换行宽松,贴 OCR 实际格式(如 `$x_i = (...)^T$`)。
+// throwOnError:语法烂的公式不抛,降级红色字符串显示,viewer 不崩。
+marked.use(markedKatex({ throwOnError: false, nonStandard: true }));
+
+const DOCUMENT_ID = new URLSearchParams(location.search).get('doc');  // P1b-i1:从 ?doc=N 取,无则 null
+const API_BASE = '';   // 同源,API 跟 viewer 同一个 uvicorn server
+
+const NODE_STYLES = {
+  concept: { shape: 'dot',     color: { background: '#5B9BD5', border: '#1F3864' }, size: 16 },
+  method:  { shape: 'diamond', color: { background: '#ED7D31', border: '#843C0C' }, size: 16 },
+  example: { shape: 'triangle',color: { background: '#70AD47', border: '#385723' }, size: 18 },
+};
+
+const EDGE_STYLES = {
+  requires:       { color: { color: '#1F3864' }, dashes: false, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
+  related_to:     { color: { color: '#7F7F7F' }, dashes: true,  arrows: { to: { enabled: false } } },
+  contrasts_with: { color: { color: '#C00000' }, dashes: false,
+                    arrows: { to: { enabled: true, scaleFactor: 0.5 }, from: { enabled: true, scaleFactor: 0.5 } } },
+  example_of:     { color: { color: '#70AD47' }, dashes: false, arrows: { to: { enabled: true, scaleFactor: 0.6 } } },
+};
+
+let allNodes = [], allEdges = [], notesById = {}, nodesByExtId = {};
+let nodesDS, edgesDS, network;
+let selectedTypes = new Set(['concept', 'method', 'example']);
+let selectedChapters = new Set();
+
+// ---------- Phase 3-1: Note section anchor 跳转 ----------
+function slugifyHeading(text) {
+  // 跟服务端 slugify_heading (Python) 一致:lowercase / 去 ## 前缀 / 去 leading 数字 / 非字母数字 → hyphen
+  let s = String(text || '').toLowerCase().trim();
+  s = s.replace(/^#+\s+/, '');
+  s = s.replace(/^[\d.]+\s*/, '');
+  s = s.replace(/[^a-z0-9]+/g, '-');
+  s = s.replace(/^-+|-+$/g, '');
+  return s || 'unnamed';
+}
+
+function renderMarkdownWithAnchors(md) {
+  // marked 渲染后,给每个 heading 加 data-slug 属性供 anchor 查询
+  // A2-1:collision-aware,同 Note 内同 slug 加 -2/-3 后缀,镜像服务端 slugify_headings
+  if (!md) return '';
+  const html = marked.parse(md);
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html;
+  const seen = Object.create(null);
+  wrapper.querySelectorAll('h1, h2, h3, h4').forEach(h => {
+    const base = slugifyHeading(h.textContent);
+    const n = (seen[base] || 0) + 1;
+    seen[base] = n;
+    h.setAttribute('data-slug', n === 1 ? base : `${base}-${n}`);
+  });
+  return wrapper.innerHTML;
+}
+
+function scrollToAnchor(container, slug) {
+  // 在容器内找 data-slug 匹配的 heading,滚到它 + 短暂黄色 highlight
+  if (!container || !slug) return false;
+  const el = container.querySelector(`[data-slug="${CSS.escape(slug)}"]`);
+  if (!el) return false;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // brief highlight 表示目标
+  const orig = el.style.backgroundColor;
+  el.style.transition = 'background-color 0.4s ease-out';
+  el.style.backgroundColor = '#fff8c4';
+  setTimeout(() => { el.style.backgroundColor = orig; }, 2500);
+  return true;
+}
+
+// ---------- Phase 3-3 D:独立 Notes 面板(不依赖 KG)----------
+function chapterSortKey(chapId) {
+  // S3 rider:N 级泛化 —— 'ch1' → [1];'ch3.10' → [3,10];'ch6.1.1' → [6,1,1];非法 → [99]
+  // 后端 _ck(routes_domain:216)同形,前后端同序。
+  const m = /^ch(\d+(?:\.\d+)*)$/.exec(chapId || '');
+  return m ? m[1].split('.').map(n => parseInt(n, 10)) : [99];
+}
+function cmpKey(ka, kb) {
+  // 词典序变长比较;缺位补 0 → [1] < [1,1](章排在其节前)
+  const len = Math.max(ka.length, kb.length);
+  for (let i = 0; i < len; i++) {
+    const a = ka[i] ?? 0, b = kb[i] ?? 0;
+    if (a !== b) return a - b;
+  }
+  return 0;
+}
+
+function noteTitle(note) {
+  // 取 content_md 第一个 markdown heading 当标题,无则回退 chapter_id
+  const m = /^#{1,4}\s+(.+)$/m.exec(note.content_md || '');
+  return m ? m[1].trim() : (note.chapter_id || `note ${note.id}`);
+}
+
+function buildNotesPanel() {
+  // 哪些 chapter 在 KG 里有节点 —— 没有的标 "仅 Note,图谱无此节"(解释 ch3.10 现象)
+  const chaptersWithNodes = new Set(allNodes.map(n => n.chapter_id));
+
+  const notes = Object.values(notesById).slice().sort((a, b) =>
+    cmpKey(chapterSortKey(a.chapter_id), chapterSortKey(b.chapter_id))
+    || a.id - b.id);
+
+  // 按 chapter 大类(ch1 / ch2 / ch3)分组展示
+  const groups = {};
+  notes.forEach(n => {
+    const major = (n.chapter_id || '?').split('.')[0];
+    (groups[major] = groups[major] || []).push(n);
+  });
+
+  const html = Object.keys(groups)
+    .sort((a, b) => (parseInt(a.replace('ch', '')) || 99) - (parseInt(b.replace('ch', '')) || 99))
+    .map(major => {
+      const rows = groups[major].map(n => {
+        const orphan = !chaptersWithNodes.has(n.chapter_id);
+        const badge = orphan
+          ? `<span class="nr-badge">仅 Note · 图谱无此节</span>` : '';
+        return `<div class="note-row" data-note-id="${n.id}">
+            <span class="nr-chap">${n.chapter_id || '?'}</span>
+            <span class="nr-title">${noteTitle(n)}</span>
+            ${badge}
+            <span class="nr-meta">${(n.content_md || '').length} 字 · id=${n.id}</span>
+          </div>`;
+      }).join('');
+      return `<div class="notes-chap-group">
+          <div class="notes-chap-head">${major.toUpperCase()} — ${groups[major].length} notes</div>
+          ${rows}
+        </div>`;
+    }).join('');
+
+  const listEl = document.getElementById('notes-list');
+  listEl.innerHTML = html;
+  listEl.querySelectorAll('.note-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const n = notesById[row.getAttribute('data-note-id')];
+      if (!n) return;
+      // 复用 fullscreen reader(叠在 notes-overlay 之上,关掉后回到列表)
+      openFullscreen(
+        `<strong>${n.chapter_id || ''}</strong> · ${noteTitle(n)} · Note id=${n.id}`,
+        n.content_md, null,
+      );
+    });
+  });
+}
+
+function openNotesPanel() {
+  document.getElementById('notes-overlay').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+function closeNotesPanel() {
+  document.getElementById('notes-overlay').classList.remove('active');
+  if (!document.getElementById('fs-overlay').classList.contains('active')) {
+    document.body.style.overflow = '';
+  }
+}
+
+// ---------- P3a:章节状态(只读 3 态;生成/重建按钮=P3b)----------
+let _genPoll = null;
+
+function _pollJob(jobId, el, docId, fs, errs) {
+  errs = errs || 0;
+  clearTimeout(_genPoll);
+  _genPoll = setTimeout(async () => {
+    let j = null, netErr = false;
+    try { j = await fetch(`${API_BASE}/generation-jobs/${jobId}`).then(r => r.json()); }
+    catch (_) { netErr = true; }
+    if (j && (j.status === 'done' || j.status === 'failed')) {
+      _genPoll = null;
+      window._ingestJob = null;             // rider:终态统一释放 ⏳ 锁,先于一切分支/return
+      if (j.status === 'done' && fs) { location.reload(); return; }      // d1
+      if (j.status === 'failed') window._lastGenFail =                   // d2:set 必须在 render 前
+        '失败:' + (j.detail || '(无详情)').split('\n')[0];
+      renderChapterStatus(el, docId, fs);
+    } else if (netErr && errs + 1 >= 5) {                                // 连续~15s 拿不到状态
+      _genPoll = null;
+      window._ingestJob = null;             // rider:客户端网络异常路径同样释放锁=逃生口
+      window._lastGenFail =                                              // 同 d2:set 在 render 前
+        '状态查询连续失败:任务可能已在后台完成,刷新本面板确认';
+      renderChapterStatus(el, docId, fs);
+    } else {
+      _pollJob(jobId, el, docId, fs, netErr ? errs + 1 : 0);             // 瞬时抖动:计数后续轮询自愈
+    }
+  }, 3000);                                                              // d3
+}
+
+async function _startGen(docId, ch, mode, el, fs) {
+  try {
+    const r = await fetch(`${API_BASE}/documents/${docId}/chapters/${ch}/${mode}`,
+                          { method: 'POST' });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.detail || `HTTP ${r.status}`);
+    window._lastGenFail = null;
+    renderChapterStatus(el, docId, fs);          // 立即重渲 → busy 态
+    _pollJob(b.job_id, el, docId, fs);
+  } catch (e) {
+    window._lastGenFail = '启动失败:' + e.message;   // 如 409 一次一个;先 set 后 render
+    renderChapterStatus(el, docId, fs);
+  }
+}
+
+async function _startIngest(docId, chapNum, el, fs) {
+  try {
+    const r = await fetch(`${API_BASE}/documents/${docId}/ingest-chapter?chapter=${chapNum}`,
+                          { method: 'POST' });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.detail || `HTTP ${r.status}`);
+    window._lastGenFail = null;
+    window._ingestJob = b.job_id;            // ingest job 结构上不入 /chapters,前端旗派生 busy
+    renderChapterStatus(el, docId, fs);          // 立即重渲 → ⏳ 态
+    _pollJob(b.job_id, el, docId, fs);
+  } catch (e) {
+    window._ingestJob = null;                // rider:任何 _lastGenFail-set 处同步释放锁
+    window._lastGenFail = '启动失败:' + e.message;
+    renderChapterStatus(el, docId, fs);
+  }
+}
+
+// S4:标注该节内容页 → C-方案 $0 预览-确认 modal → 视觉 OCR + chunker
+async function _startContent(docId, ch, el, fs) {
+  const pages = prompt('该节(' + ch + ')内容在 PDF 第几页?(物理页,如 50-65 或 50,52-55)');
+  if (!pages || !pages.trim()) return;
+  const pagesTrim = pages.trim();
+
+  // 1. 弹 modal 进 loading 态(让用户看到反馈,thumbs 1-2s 可见)
+  const tpOverlay = document.getElementById('tp-overlay');
+  const tpGrid = document.getElementById('tp-grid');
+  const tpMeta = document.getElementById('tp-meta');
+  const tpConfirm = document.getElementById('tp-confirm');
+  const tpCancel = document.getElementById('tp-cancel');
+  tpGrid.innerHTML = '<div style="color:#666;padding:20px">loading…</div>';
+  tpMeta.textContent = ch + ' · p=' + pagesTrim;
+  tpOverlay.classList.add('active');
+
+  const closeTp = () => {
+    tpOverlay.classList.remove('active');
+    tpGrid.innerHTML = '';
+    tpConfirm.onclick = null;
+    tpCancel.onclick = null;
+  };
+  tpCancel.onclick = closeTp;
+
+  // 2. 拉 $0 缩略图;失败也保持 modal 开,只显示错误(用户可取消)
+  let thumbs;
+  try {
+    const url = `${API_BASE}/documents/${docId}/page-thumbs` +
+                `?pages=${encodeURIComponent(pagesTrim)}`;
+    const r = await fetch(url);
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.detail || `HTTP ${r.status}`);
+    thumbs = b.pages || [];
+  } catch (e) {
+    tpGrid.innerHTML =
+      '<div style="color:#C00000;padding:20px">预览失败:' +
+      e.message + '<br>(可取消重输页号)</div>';
+    return;
+  }
+
+  // 3. 渲染缩略图 grid
+  tpGrid.innerHTML = thumbs.map(t =>
+    '<div class="tp-thumb">' +
+      '<div class="tp-pg">p' + t.page + '</div>' +
+      '<img src="data:image/jpeg;base64,' + t.data + '" alt="page ' + t.page + '">' +
+    '</div>'
+  ).join('');
+  tpMeta.textContent = ch + ' · p=' + pagesTrim + ' · ' + thumbs.length + ' 页';
+
+  // 4. 用户「确认抽取」→ 复原本 POST extract-content;「取消」→ 啥都不发
+  tpConfirm.onclick = async () => {
+    closeTp();
+    try {
+      const url = `${API_BASE}/documents/${docId}/chapters/${ch}/extract-content` +
+                  `?pages=${encodeURIComponent(pagesTrim)}`;
+      const r = await fetch(url, { method: 'POST' });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(b.detail || `HTTP ${r.status}`);
+      window._lastGenFail = null;
+      renderChapterStatus(el, docId, fs);          // 立即重渲 → ⏳ 态
+      _pollJob(b.job_id, el, docId, fs);
+    } catch (e) {
+      window._lastGenFail = '标注启动失败:' + e.message;
+      renderChapterStatus(el, docId, fs);
+    }
+  };
+}
+
+async function renderChapterStatus(containerEl, docId, fullscreen) {
+  let chs;
+  try {
+    chs = await fetch(`${API_BASE}/documents/${docId}/chapters`).then(r => r.json());
+  } catch (err) {
+    containerEl.innerHTML = '<div style="color:#C00000;padding:10px">章节状态加载失败:' + err.message + '</div>';
+    return;
+  }
+  let titleByCh = {};            // 原书 TOC 真章/节名;rider:顶层守卫 + 缺键回退,未回填不白屏
+  try {
+    const _doc = await fetch(`${API_BASE}/documents/${docId}`).then(r => r.json());
+    titleByCh = (_doc && _doc.parsed_outline) || {};
+  } catch (_) { /* outline 非关键:失败则行显 chapter_id、组头纯「第 N 章」 */ }
+  const badge = { done: '✅ 已完成', rebuild_kg: '○ 无图谱节点', generate: '○ 未生成',
+                  needs_content: '○ 待标内容' };
+  const label = { generate: '生成', rebuild_kg: '重建 KG', needs_content: '标注内容' };
+  const busy = window._ingestJob || (Array.isArray(chs) && chs.some(c => c.active_job));
+  const hasEmptyKg = Array.isArray(chs) && chs.some(c => c.state === 'rebuild_kg');
+  const emptyKgNote = hasEmptyKg
+    ? '<div style="color:#888;font-size:12px;padding:4px 10px 8px;line-height:1.5">'
+      + '「○ 无图谱节点」= 本节笔记已生成,但未抽出图谱节点。综述/总结类章节'
+      + '(如各章 Summary)通常无可抽取的概念关系,属正常、无需处理;'
+      + '若你判断本节应有概念,可点「重建 KG」重试。</div>' : '';
+  const _cRow = c => {
+    let a = '';
+    if (c.active_job) a = '<span style="color:#1F3864">⏳ 生成中…</span>';
+    else if (c.state === 'needs_content')
+      a = '<button class="cr-btn" data-ch="' + c.chapter_id + '" data-mode="content"' +
+          (busy ? ' disabled' : '') + '>📄 标注内容</button>';
+    else if (c.state === 'generate' || c.state === 'rebuild_kg')
+      a = `<button class="cr-btn" data-ch="${c.chapter_id}" ` +
+          `data-mode="${c.state === 'generate' ? 'generate' : 'rebuild'}"` +
+          `${busy ? ' disabled' : ''}>${label[c.state]}</button>`;
+    const nm = c.title || titleByCh[c.chapter_id];      // S3:优先后端 title
+    return `<div class="chap-row chap-sub"><span class="cr-ch">${c.chapter_id}</span>` +
+           (nm ? `<span class="cr-name">${nm}</span>` : '') +
+           `<span class="cr-st">${badge[c.state] || c.state}</span>` +
+           `<span class="cr-a">${a}</span></div>`;
+  };
+  const rows = (Array.isArray(chs) && chs.length)
+    ? (() => {
+        const byMaj = new Map();           // 按大章分组,小节缩进列于所属章下
+        chs.forEach(c => {
+          const mj = (String(c.chapter_id).match(/^ch(\d+)/) || [, '?'])[1];
+          if (!byMaj.has(mj)) byMaj.set(mj, []);
+          byMaj.get(mj).push(c);
+        });
+        return [...byMaj.keys()]
+          .sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99))
+          .map(mj => {
+            const items = byMaj.get(mj);
+            const chRow = items.find(c => c.chapter_id === 'ch' + mj);
+            const subRows = items.filter(c => c.chapter_id !== 'ch' + mj);
+            // 章级行(ch{mj})若有子节:其 title 升到组头("第 N 章 — 标题"),
+            // 不独立渲染(避免与父级标题重复 + 防止用户在章级标内容与子节
+            // 重复抽);若【无】子节(章直接到底,如某书 ch12 无 12.x),仍
+            // 渲染章级行作最小可标单元。
+            const inner = subRows.length
+              ? subRows
+                  .sort((x, y) =>
+                    cmpKey(chapterSortKey(x.chapter_id), chapterSortKey(y.chapter_id)))
+                  .map(_cRow).join('')
+              : (chRow ? _cRow(chRow) : '');
+            const ct = (chRow && chRow.title) || titleByCh['ch' + mj];
+            return `<div class="chap-grp"><div class="chap-grp-head">第 ${mj} 章` +
+                   `${ct ? ' — ' + ct : ''}</div>${inner}</div>`;
+          }).join('');
+      })()
+    : '<div style="color:#888;padding:10px">该书无章节;请先在书库点📑标注目录</div>';
+  const failBar = window._lastGenFail
+    ? `<div class="cr-fail" style="padding:6px 10px">⚠ ${window._lastGenFail}</div>` : '';
+  containerEl.innerHTML =
+    (fullscreen
+      ? '<h2 style="color:#1F3864;margin:0 0 6px">这本书的章节</h2>' +
+        (busy
+          ? '<p style="color:#1F3864;font-size:13px;margin:0 0 16px">⏳ 正在处理,完成后本页自动进入学习…</p>'
+          : '')
+      : '') +
+    failBar + emptyKgNote + rows +
+    (fullscreen
+      ? '<p style="margin-top:18px"><a href="/" style="color:#1F3864">← 返回书库</a></p>'
+      : '');
+  containerEl.querySelectorAll('.cr-btn[data-ch]').forEach(btn =>
+    btn.addEventListener('click', () => {
+      const mode = btn.getAttribute('data-mode');
+      const ch = btn.getAttribute('data-ch');
+      if (mode === 'content') _startContent(docId, ch, containerEl, fullscreen);
+      else _startGen(docId, ch, mode, containerEl, fullscreen);
+    }));
+  if (busy && !_genPoll) {                       // d4:进页自动续轮询(切走回来不 stale)
+    const aj = chs.find(c => c.active_job);
+    if (aj) _pollJob(aj.active_job, containerEl, docId, fullscreen);
+  }
+}
+
+function openChapPanel() {
+  document.getElementById('chap-overlay').classList.add('active');
+  document.body.style.overflow = 'hidden';
+  renderChapterStatus(document.getElementById('chap-list'), DOCUMENT_ID, false);
+}
+function closeChapPanel() {
+  document.getElementById('chap-overlay').classList.remove('active');
+  if (!document.getElementById('fs-overlay').classList.contains('active') &&
+      !document.getElementById('notes-overlay').classList.contains('active')) {
+    document.body.style.overflow = '';
+  }
+}
+
+// ---------- P4:Note ↔ 教材原文对照(整本 PDF 内嵌,无页码同步)----------
+let _cmpNotes = [];
+async function openCmpPanel() {
+  document.getElementById('cmp-overlay').classList.add('active');
+  document.body.style.overflow = 'hidden';
+  const pdf = document.getElementById('cmp-pdf');
+  if (!pdf.src) pdf.src = `${API_BASE}/documents/${DOCUMENT_ID}/pdf`;   // 重 PDF 只加载一次
+  let outline = {};
+  try {
+    const d = await fetch(`${API_BASE}/documents/${DOCUMENT_ID}`).then(r => r.json());
+    outline = (d && d.parsed_outline) || {};
+  } catch (_) {}
+  try {
+    _cmpNotes = await fetch(`${API_BASE}/documents/${DOCUMENT_ID}/notes`).then(r => r.json());
+  } catch (_) { _cmpNotes = []; }
+  if (!Array.isArray(_cmpNotes) || !_cmpNotes.length) {
+    document.getElementById('cmp-note').innerHTML =
+      '<span style="color:#888">本书还没有 note(先在「章节状态」生成)</span>';
+    document.getElementById('cmp-pick').innerHTML = '';
+    return;
+  }
+  const seen = {};
+  const uniq = _cmpNotes.filter(n =>
+    n.chapter_id && !(n.chapter_id in seen) && (seen[n.chapter_id] = 1));
+  uniq.sort((a, b) =>
+    cmpKey(chapterSortKey(a.chapter_id), chapterSortKey(b.chapter_id)));
+  document.getElementById('cmp-pick').innerHTML = uniq.map(n =>
+    `<option value="${n.id}">${n.chapter_id}` +
+    `${outline[n.chapter_id] ? ' — ' + outline[n.chapter_id] : ''}</option>`
+  ).join('');
+  const renderById = id => {
+    const n = _cmpNotes.find(x => String(x.id) === String(id));
+    document.getElementById('cmp-note').innerHTML =
+      n ? renderMarkdownWithAnchors(n.content_md) : '';
+  };
+  const sel = document.getElementById('cmp-pick');
+  sel.onchange = () => renderById(sel.value);
+  renderById(uniq[0].id);
+}
+function closeCmpPanel() {
+  document.getElementById('cmp-overlay').classList.remove('active');
+  const on = id => document.getElementById(id).classList.contains('active');
+  if (!on('fs-overlay') && !on('notes-overlay') && !on('chap-overlay')) {
+    document.body.style.overflow = '';
+  }
+}
+
+async function fetchJSON(url) {
+  // P1b-i1(B):检 r.ok,失败抛服务端 detail —— 杜绝 404 body 当成功致
+  // kg.nodes undefined 的裸 TypeError;fail-loud 要干净。
+  const r = await fetch(url);
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`;
+    try { detail = (await r.json()).detail || detail; } catch (_) {}
+    const err = new Error(detail);
+    err.status = r.status;   // P1b-B:带状态码,catch 区分无KG产品态(404)vs 真故障
+    throw err;
+  }
+  return r.json();
+}
+
+async function main() {
+  // 拉 KG + Notes
+  const kg = await fetchJSON(`${API_BASE}/documents/${DOCUMENT_ID}/kg`);
+  const notes = await fetchJSON(`${API_BASE}/documents/${DOCUMENT_ID}/notes`);
+
+  notes.forEach(n => notesById[n.id] = n);
+  kg.nodes.forEach(n => nodesByExtId[n.external_id] = n);
+  allNodes = kg.nodes;
+  allEdges = kg.edges;
+
+  // 空 KG 态(典型:刚 S2 标完目录、还没 S4 标内容 / 还没生成):viewer 主结构
+  // 仍出(sidebar / 章节状态按钮 / 返回主页),中央换引导横幅,不进 vis.js 初始化。
+  if (allNodes.length === 0) {
+    document.getElementById('stats').innerHTML =
+      `<strong>${kg.document_title || ''}</strong><br>` +
+      `<span style="color:#999">无图谱节点</span>`;
+    document.getElementById('graph').innerHTML =
+      '<div style="padding:60px 40px;text-align:center;line-height:1.8">' +
+        '<p style="font-size:18px;margin:0 0 12px;color:#333">本书还无图谱节点</p>' +
+        '<p style="font-size:14px;margin:0 0 28px;color:#666">需要先标注章节内容,生成 note 与 KG 后这里会出现知识图谱。</p>' +
+        '<button onclick="openChapPanel()" style="padding:10px 22px;font-size:14px;' +
+          'background:#1F3864;color:#fff;border:none;border-radius:4px;cursor:pointer;' +
+          'margin-right:10px">📊 打开章节状态</button>' +
+        '<a href="/" style="display:inline-block;padding:10px 22px;font-size:14px;' +
+          'color:#1F3864;text-decoration:none;border:1px solid #1F3864;' +
+          'border-radius:4px">← 返回书库</a>' +
+      '</div>';
+    document.getElementById('chapter-filter').innerHTML =
+      '<span style="color:#888;font-size:12px">尚无图谱章节</span>';
+    return;
+  }
+
+  buildNotesPanel();   // Phase 3-3 D:Notes 列表(需 allNodes 算 orphan badge)
+
+  // stats
+  document.getElementById('stats').innerHTML = `
+    <strong>${kg.document_title}</strong><br>
+    ${kg.stats.total_nodes} nodes · ${kg.stats.total_edges} edges<br>
+    <span style="color:#999">${kg.chapters.length} chapters</span>
+  `;
+
+  // chapter filter — 大章分组 + 每章主选 + 全局全选(过滤仍只认 .ch-leaf-cb)
+  selectedChapters = new Set(kg.chapters);
+  const filterDiv = document.getElementById('chapter-filter');
+  filterDiv.innerHTML = '';
+  const _allLab = document.createElement('label');
+  _allLab.className = 'ch-all';
+  _allLab.innerHTML = `<input type="checkbox" id="ch-all-cb" checked> 全选`;
+  filterDiv.appendChild(_allLab);
+  _allLab.querySelector('input').addEventListener('change', e => {
+    document.querySelectorAll('#chapter-filter input.ch-leaf-cb')
+      .forEach(l => { l.checked = e.target.checked; });
+    updateFilters(); _syncChapMasters();
+  });
+  const _byMaj = new Map();
+  kg.chapters.forEach(ch => {
+    const mj = (String(ch).match(/^ch(\d+)/) || [, '?'])[1];
+    if (!_byMaj.has(mj)) _byMaj.set(mj, []);
+    _byMaj.get(mj).push(ch);
+  });
+  [...(_byMaj.keys())]
+    .sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99))
+    .forEach(mj => {
+      const head = document.createElement('label');
+      head.className = 'ch-grp-head';
+      head.innerHTML = `<input type="checkbox" class="ch-grp-cb" data-maj="${mj}" checked> 第 ${mj} 章`;
+      head.querySelector('input').addEventListener('change', e => {
+        document.querySelectorAll(`#chapter-filter input.ch-leaf-cb[data-maj="${mj}"]`)
+          .forEach(l => { l.checked = e.target.checked; });
+        updateFilters(); _syncChapMasters();
+      });
+      filterDiv.appendChild(head);
+      _byMaj.get(mj)
+        .sort((a, b) =>
+          cmpKey(chapterSortKey(a), chapterSortKey(b)))
+        .forEach(ch => {
+          const lab = document.createElement('label');
+          lab.className = 'ch-leaf';
+          lab.innerHTML = `<input type="checkbox" class="ch-leaf-cb" data-maj="${mj}" value="${ch}" checked> ${ch}`;
+          lab.querySelector('input').addEventListener('change', () => {
+            updateFilters(); _syncChapMasters();
+          });
+          filterDiv.appendChild(lab);
+        });
+    });
+  _syncChapMasters();
+
+  // type filter wire-up
+  document.querySelectorAll('#type-filter input').forEach(cb => {
+    cb.addEventListener('change', updateFilters);
+  });
+
+  // build initial vis.js datasets
+  buildDatasets();
+
+  network = new vis.Network(
+    document.getElementById('graph'),
+    { nodes: nodesDS, edges: edgesDS },
+    {
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: { gravitationalConstant: -100, springLength: 120 },
+        stabilization: { iterations: 250 }
+      },
+      interaction: { hover: true, tooltipDelay: 300 },
+      nodes: { font: { size: 13, face: 'sans-serif' } },
+      edges: { smooth: { type: 'continuous' }, width: 1.5 },
+    }
+  );
+
+  network.on('click', (params) => {
+    if (params.nodes.length > 0) showNodeDetails(params.nodes[0]);
+    else if (params.edges.length > 0) showEdgeDetails(params.edges[0]);
+  });
+
+  // search box
+  document.getElementById('search-box').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return;
+    const match = allNodes.find(n => n.label.toLowerCase().includes(q));
+    if (match) {
+      network.focus(match.external_id, { scale: 1.2, animation: true });
+      network.selectNodes([match.external_id]);
+      showNodeDetails(match.external_id);
+    }
+  });
+}
+
+function buildDatasets() {
+  const visNodes = allNodes
+    .filter(n => selectedTypes.has(n.type) && selectedChapters.has(n.chapter_id))
+    .map(n => ({
+      id: n.external_id,
+      label: n.label,
+      title: `${n.type} · ${n.chapter_id}\n${n.description || ''}`,
+      ...NODE_STYLES[n.type],
+    }));
+
+  const visibleExtIds = new Set(visNodes.map(n => n.id));
+
+  const visEdges = allEdges
+    .filter(e => visibleExtIds.has(e.source_external_id) && visibleExtIds.has(e.target_external_id))
+    .map(e => ({
+      id: `e${e.id}`,                  // stable DB id,filter 切换不会错位
+      from: e.source_external_id,
+      to: e.target_external_id,
+      title: `${e.type}${e.notes ? '\n' + e.notes : ''}`,
+      ...EDGE_STYLES[e.type],
+    }));
+
+  if (nodesDS) {
+    nodesDS.clear(); nodesDS.add(visNodes);
+    edgesDS.clear(); edgesDS.add(visEdges);
+  } else {
+    nodesDS = new vis.DataSet(visNodes);
+    edgesDS = new vis.DataSet(visEdges);
+  }
+}
+
+function updateFilters() {
+  selectedTypes = new Set(
+    Array.from(document.querySelectorAll('#type-filter input:checked')).map(x => x.value)
+  );
+  selectedChapters = new Set(
+    Array.from(document.querySelectorAll('#chapter-filter input.ch-leaf-cb:checked')).map(x => x.value)
+  );
+  buildDatasets();
+}
+
+function _syncChapMasters() {
+  const leaves = [...document.querySelectorAll('#chapter-filter input.ch-leaf-cb')];
+  document.querySelectorAll('#chapter-filter input.ch-grp-cb').forEach(m => {
+    const g = leaves.filter(l => l.dataset.maj === m.dataset.maj);
+    const on = g.filter(l => l.checked).length;
+    m.checked = g.length > 0 && on === g.length;
+    m.indeterminate = on > 0 && on < g.length;
+  });
+  const all = document.getElementById('ch-all-cb');
+  if (all) {
+    const on = leaves.filter(l => l.checked).length;
+    all.checked = leaves.length > 0 && on === leaves.length;
+    all.indeterminate = on > 0 && on < leaves.length;
+  }
+}
+
+function showNodeDetails(extId) {
+  const node = nodesByExtId[extId];
+  if (!node) return;
+
+  // Phase 3-2 A2:决定渲染哪个 Note + 跳哪个 slug
+  //   优先级:home note + note_anchor_slug > cross_note + cross_note_slug > home note 起点
+  let displayNoteId = node.note_ref_id;
+  let displaySlug = node.note_anchor_slug;
+  let isCrossNote = false;
+  if (!node.note_anchor_slug && node.cross_note_id && notesById[node.cross_note_id]) {
+    displayNoteId = node.cross_note_id;
+    displaySlug = node.cross_note_slug;
+    isCrossNote = true;
+  }
+
+  const displayNote = displayNoteId ? notesById[displayNoteId] : null;
+  const noteHtml = displayNote
+    ? renderMarkdownWithAnchors(displayNote.content_md)
+    : '<span class="placeholder">(no source Note linked)</span>';
+
+  // 跨章 banner:解释为啥点 chN 节点显示的是 chM Note
+  const crossBanner = isCrossNote
+    ? `<div class="cross-banner">
+         跨章引用:本节点的 home Note (${node.chapter_id}) 没有专门讲解段落,
+         viewer 跳到 <strong>Note id=${displayNoteId}</strong> 内的对应 section
+       </div>`
+    : '';
+
+  document.getElementById('node-details').classList.remove('placeholder');
+  document.getElementById('node-details').innerHTML = `
+    <h3><span class="type-badge ${node.type}">${node.type}</span>${node.label}</h3>
+    <p class="meta">
+      chapter: <strong>${node.chapter_id}</strong> ·
+      ext_id: <code>${node.external_id}</code>
+    </p>
+    <p>${node.description || '<span class="placeholder">(no description)</span>'}</p>
+
+    <div class="section-title-row">
+      <div class="section-title">Source Note ${displayNoteId ? '(id=' + displayNoteId + ')' : ''}</div>
+      ${displayNote
+        ? `<button class="fs-btn" id="open-fs-btn" type="button">⛶ 全屏阅读</button>`
+        : ''}
+    </div>
+    ${crossBanner}
+    <div class="note-preview">${noteHtml}</div>
+  `;
+
+  // wire 全屏阅读按钮
+  const fsBtn = document.getElementById('open-fs-btn');
+  if (fsBtn && displayNote) {
+    fsBtn.addEventListener('click', () => {
+      const titleBits = [
+        `<strong>${node.label}</strong>`,
+        node.chapter_id,
+        `Note id=${displayNoteId}`,
+      ];
+      if (isCrossNote) titleBits.push('<span style="color:#C00000">[跨章]</span>');
+      openFullscreen(titleBits.join(' · '), displayNote.content_md, displaySlug);
+    });
+  }
+
+  // 点节点后,在右侧 note-preview 自动滚到对应 ## section
+  if (displaySlug) {
+    setTimeout(() => {
+      const previewEl = document.querySelector('.note-preview');
+      scrollToAnchor(previewEl, displaySlug);
+    }, 80);
+  }
+
+}
+
+function showEdgeDetails(edgeId) {
+  // edge id format 'eN' where N is the DB stable id (kg_edge.id)
+  const dbId = parseInt(edgeId.substring(1));
+  const e = allEdges.find(x => x.id === dbId);
+  if (!e) return;
+  const src = nodesByExtId[e.source_external_id];
+  const tgt = nodesByExtId[e.target_external_id];
+
+  document.getElementById('node-details').innerHTML = `
+    <h3>Edge: ${e.type}</h3>
+    <p class="meta">
+      <a data-extid="${e.source_external_id}">${src.label}</a>
+      <span class="arrow">${e.type === 'related_to' || e.type === 'contrasts_with' ? '↔' : '→'}</span>
+      <a data-extid="${e.target_external_id}">${tgt.label}</a>
+    </p>
+    <p><strong>Type:</strong> ${e.type}</p>
+    <p><strong>Notes:</strong><br>${e.notes || '<span class="placeholder">(none)</span>'}</p>
+  `;
+  document.querySelectorAll('#node-details a[data-extid]').forEach(a => {
+    a.addEventListener('click', () => {
+      const target = a.getAttribute('data-extid');
+      network.focus(target, { scale: 1.2, animation: true });
+      network.selectNodes([target]);
+      showNodeDetails(target);
+    });
+  });
+}
+
+// ---------- Fullscreen 阅读模式 ----------
+function openFullscreen(titleHtml, markdownText, anchorSlug = null) {
+  document.getElementById('fs-title').innerHTML = titleHtml;
+  const contentEl = document.getElementById('fs-content');
+  contentEl.innerHTML = renderMarkdownWithAnchors(markdownText);
+  document.getElementById('fs-overlay').classList.add('active');
+  document.body.style.overflow = 'hidden';   // 阻止背景滚动
+  // Phase 3-1:全屏模式滚到指定 anchor
+  if (anchorSlug) {
+    setTimeout(() => scrollToAnchor(contentEl, anchorSlug), 100);
+  }
+}
+
+function closeFullscreen() {
+  document.getElementById('fs-overlay').classList.remove('active');
+  // 若 notes 面板还在底下开着,保持 body 不滚动
+  if (!document.getElementById('notes-overlay').classList.contains('active')) {
+    document.body.style.overflow = '';
+  }
+}
+
+document.getElementById('fs-close').addEventListener('click', closeFullscreen);
+document.getElementById('notes-btn').addEventListener('click', openNotesPanel);
+document.getElementById('export-btn').addEventListener('click', () => {
+  // 浏览器自然下载,无需 fetch + blob;Content-Disposition: attachment 让浏览器存盘
+  if (!DOCUMENT_ID) { alert('无 ?doc= 参数,无法导出'); return; }
+  window.location.href = `${API_BASE}/documents/${DOCUMENT_ID}/notes-export`;
+});
+document.getElementById('notes-close').addEventListener('click', closeNotesPanel);
+document.getElementById('chap-btn').addEventListener('click', openChapPanel);
+document.getElementById('chap-close').addEventListener('click', closeChapPanel);
+document.getElementById('cmp-btn').addEventListener('click', openCmpPanel);
+document.getElementById('cmp-close').addEventListener('click', closeCmpPanel);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  // 叠放优先级:tp(预览,z-index 1100,在 chap-overlay 上)> fs > notes > chap
+  const tp = document.getElementById('tp-overlay');
+  if (tp.classList.contains('active')) {
+    document.getElementById('tp-cancel').click();   // 触发 closeTp + 解绑 handlers
+    return;
+  }
+  if (document.getElementById('fs-overlay').classList.contains('active')) {
+    closeFullscreen();
+  } else if (document.getElementById('notes-overlay').classList.contains('active')) {
+    closeNotesPanel();
+  } else if (document.getElementById('chap-overlay').classList.contains('active')) {
+    closeChapPanel();
+  } else if (document.getElementById('cmp-overlay').classList.contains('active')) {
+    closeCmpPanel();
+  }
+});
+
+if (!DOCUMENT_ID) {
+  // P1b-i1 fail-loud(决策 c):无 ?doc= 不静默默认 2,显式回书库
+  document.body.innerHTML =
+    '<div style="max-width:620px;margin:80px auto;padding:0 20px;' +
+    'font-family:-apple-system,sans-serif;color:#333;line-height:1.6">' +
+    '<h2 style="color:#1F3864">未选择书籍</h2>' +
+    '<p>本页需从书库进入(URL 缺 <code>?doc=</code> 参数)。</p>' +
+    '<p><a href="/" style="color:#1F3864">← 返回书库</a></p></div>';
+} else {
+  main().catch(e => {
+    // /kg 现仅 "document 不存在" 才 404(空 KG 已改 200);任何错误都在
+    // 详情面板里渲染,viewer 主结构(sidebar / 📊章节状态 / 返回主页)保留可见。
+    if (e.status === 404) {
+      document.getElementById('node-details').innerHTML =
+        `<h3 style="color:#C00000">文档不存在</h3><p>${e.message}</p>
+         <p class="meta"><a href="/" style="color:#1F3864">← 返回书库</a></p>`;
+    } else {
+      document.getElementById('node-details').innerHTML =
+        `<h3 style="color:#C00000">加载失败</h3><p>${e.message}</p>
+         <p class="meta">确认 uvicorn 在跑、document_id=${DOCUMENT_ID}</p>`;
+    }
+  });
+}
+</script>
+</body>
+</html>
