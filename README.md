@@ -133,6 +133,23 @@ uv run alembic upgrade head
 
 ---
 
+## 卸载
+
+项目完全自包含,卸载只需删目录:
+
+```bash
+rm -rf self_study_system
+```
+
+所有数据(`app.db`、`.env`、`.venv/`、`uploads/`)都在项目目录内,一并清除。**不会**残留任何系统级文件、服务或全局包。
+
+可选额外清理:
+
+- 不再用任何 LLM 项目 → 到 [Anthropic Console](https://console.anthropic.com/) / [Google AI Studio](https://aistudio.google.com/app/apikey) 撤销 API key
+- 不再用任何 uv 项目 → `uv cache clean` 或 `rm -rf ~/.cache/uv`
+
+---
+
 ## License
 
 [MIT](LICENSE) © 2026 liutao
