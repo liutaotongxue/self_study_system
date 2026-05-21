@@ -31,10 +31,10 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 
 项目通过 LangChain 抽象层接入 LLM,在 `.env` 配置你要用的 provider key:
 
-- `ANTHROPIC_API_KEY` —— [Anthropic Console](https://console.anthropic.com/) 注册
-- `GOOGLE_API_KEY` —— [Google AI Studio](https://aistudio.google.com/app/apikey) 注册
+- `ANTHROPIC_API_KEY` —— [获取](https://console.anthropic.com/)
+- `GOOGLE_API_KEY` —— [获取](https://aistudio.google.com/app/apikey)
 
-> ⚠️ **API key 与各家的订阅服务(Claude Max / Pro、Gemini Advanced 等)完全无关**——这些订阅覆盖网页/桌面端聊天,API 调用按 token 单独计费。
+> ⚠️ **API key 用于按 token 计费的 API 调用,与各家的网页/桌面聊天订阅产品(若有)完全无关**——后者覆盖不到 API。
 
 ---
 
@@ -212,7 +212,7 @@ Remove-Item -Recurse -Force self_study_system
 
 可选额外清理:
 
-- 不再用任何 LLM 项目 → 到 [Anthropic Console](https://console.anthropic.com/) / [Google AI Studio](https://aistudio.google.com/app/apikey) 撤销 API key
+- 不再用任何 LLM 项目 → 登录你 API key 所属 provider 的 console 撤销 key(防泄漏被刷费)
 - 不再用任何 uv 项目 → `uv cache clean` 或 `rm -rf ~/.cache/uv`
 
 ---
@@ -227,4 +227,3 @@ Remove-Item -Recurse -Force self_study_system
 
 参考过的工作:
 - [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) — LangGraph harness 设计参考
-- [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python) — content filter 诊断时直读 native API
