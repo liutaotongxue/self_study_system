@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # Windows PowerShell 等效 setup.sh:一次性安装(产品 setup;dev 工具见 README)。
 # 幂等:可重跑(uv sync 幂等;.env 仅缺失时建,不覆盖;alembic upgrade 幂等)。
 $ErrorActionPreference = 'Stop'
