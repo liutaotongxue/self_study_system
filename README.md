@@ -26,7 +26,8 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 | [uv](https://docs.astral.sh/uv/) | 依赖管理 |
 | 一个或多个 LLM provider 的 API key | 详见下方 |
 | 一台现代浏览器 | viewer 前端 |
-| **Windows 用户**:[Git for Windows](https://git-scm.com/download/win) | 自带 Git Bash,跑下方 `bash` 脚本(macOS/Linux 已内置 bash,跳过) |
+
+> **Windows 用户**:本项目同时提供 PowerShell(`.ps1`)和 Bash(`.sh`)启动脚本——用 PowerShell 跑 `.ps1` 即可,**无需额外安装 Git Bash 或 WSL**。如果 PowerShell 首次执行 `.ps1` 被策略挡住,跑一次:`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
 
 项目通过 LangChain 抽象层接入 LLM,在 `.env` 配置你要用的 provider key:
 
@@ -39,30 +40,47 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 
 ## 一次性安装
 
-macOS / Linux 用终端;Windows 用 **Git Bash**(Git for Windows 自带,右键开始菜单 → Git Bash)。
-
 ```bash
 git clone https://github.com/liutaotongxue/self_study_system.git
 cd self_study_system
-bash setup.sh
-# 按提示编辑 .env,填 ANTHROPIC_API_KEY 和 GOOGLE_API_KEY
 ```
 
-`setup.sh` 会:
+**macOS / Linux**:
+
+```bash
+bash setup.sh
+```
+
+**Windows (PowerShell)**:
+
+```powershell
+.\setup.ps1
+```
+
+无论哪个,都会:
 1. `uv sync` 安装依赖
 2. 复制 `.env.example` → `.env`(若不存在)
 3. `alembic upgrade head` 建本地 SQLite DB
+
+跑完按提示编辑 `.env`,填 `ANTHROPIC_API_KEY` 和 `GOOGLE_API_KEY`。
 
 ---
 
 ## 启动
 
+**macOS / Linux**:
+
 ```bash
 bash run.sh
-# 浏览器打开 http://localhost:8000/
 ```
 
-`run.sh` 绑 `127.0.0.1:8000`,**不暴露网络**(单机单用户)。三平台命令完全相同。
+**Windows (PowerShell)**:
+
+```powershell
+.\run.ps1
+```
+
+打开浏览器 `http://localhost:8000/`。绑 `127.0.0.1:8000`,**不暴露网络**(单机单用户)。
 
 ---
 
