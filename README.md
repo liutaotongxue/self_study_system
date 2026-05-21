@@ -9,8 +9,8 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 
 - 📚 **上传 PDF**:你的教材本地保存(不入 git)
 - 🗂 **抽目录**:你选目录所在页,LLM 一发抽出全书章节结构
-- 📑 **章节 OCR**:你选某节内容页,视觉模型(Gemini 2.5-flash)OCR 出 markdown
-- 📝 **生成笔记**:Claude(sonnet-4-6)按内容生成 markdown 学习笔记(支持 LaTeX 公式)
+- 📑 **章节 OCR**:你选某节内容页,视觉 LLM 把扫描页 OCR 成 markdown
+- 📝 **生成笔记**:LLM 按内容生成 markdown 学习笔记(支持 LaTeX 公式)
 - 🕸 **构建知识图谱**:从笔记抽出 concepts + relations,vis-network 可视化
 - 📥 **导出 Notes**:一键下载 zip(一节一 `.md`,Obsidian / Typora 友好)
 
@@ -24,11 +24,15 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 |---|---|
 | Python ≥ 3.11 | 后端运行时 |
 | [uv](https://docs.astral.sh/uv/) | 依赖管理 |
-| Anthropic API key | S2 抽结构 / S5 笔记 + KG agent([注册](https://console.anthropic.com/)) |
-| Google API key (Gemini) | S4 视觉 OCR([注册](https://aistudio.google.com/app/apikey)) |
+| 一个或多个 LLM provider 的 API key | 详见下方 |
 | 一台现代浏览器 | viewer 前端 |
 
-> ⚠️ **Anthropic API key 与 Claude Max / Pro 订阅完全无关**。Max 覆盖 claude.ai 和 Claude Code 网页/桌面端,API 调用按 token 单独计费。
+项目通过 LangChain 抽象层接入 LLM,在 `.env` 配置你要用的 provider key:
+
+- `ANTHROPIC_API_KEY` —— [Anthropic Console](https://console.anthropic.com/) 注册
+- `GOOGLE_API_KEY` —— [Google AI Studio](https://aistudio.google.com/app/apikey) 注册
+
+> ⚠️ **API key 与各家的订阅服务(Claude Max / Pro、Gemini Advanced 等)完全无关**——这些订阅覆盖网页/桌面端聊天,API 调用按 token 单独计费。
 
 ---
 
@@ -65,8 +69,8 @@ bash run.sh
 |---|---|---|
 | 1 | 主页 `/` | 上传 PDF(只登记,不解析) |
 | 2 | viewer `/index.html?doc=N` → 章节状态 | 输入目录所在页(如 `7-10`)→ LLM 抽全书结构 |
-| 3 | 章节状态页 | 给某节填内容页(如 `28-35`)→ 缩略图预览确认 → Gemini OCR + 切块 |
-| 4 | 章节状态页 | 点「生成」→ Claude 出 markdown 笔记 + KG |
+| 3 | 章节状态页 | 给某节填内容页(如 `28-35`)→ 缩略图预览确认 → 视觉 OCR + 切块 |
+| 4 | 章节状态页 | 点「生成」→ LLM 出 markdown 笔记 + KG |
 | 5 | viewer | 看图、点节点读笔记、导出 Notes zip |
 
 ---
@@ -76,9 +80,7 @@ bash run.sh
 | 层 | 技术 |
 |---|---|
 | 后端 | FastAPI + SQLAlchemy 2.0 + Alembic + SQLite |
-| LLM 编排 | LangGraph 1.x + langchain-anthropic 1.x + langchain-google-genai 4.x |
-| 视觉 OCR | Gemini 2.5-flash(`safety_settings=BLOCK_NONE`) |
-| 文本/KG | Claude Sonnet 4.6 |
+| LLM 编排 | LangGraph + LangChain(多 provider 抽象) |
 | PDF 处理 | pymupdf |
 | 前端 | 原生 HTML/JS + marked(markdown) + KaTeX(数学公式) + vis-network(KG) |
 
@@ -126,7 +128,7 @@ uv run alembic upgrade head
 
 | 脚本 | 作用 |
 |---|---|
-| `ingest_pdf.py` | 离线把 PDF 灌入 DB(网页端等价于上传 + S2 + S3) |
+| `ingest_pdf.py` | 离线把 PDF 灌入 DB(网页端等价于上传 + 抽目录) |
 | `study_book.py` | 离线给章节生成 markdown 笔记 |
 | `build_kg.py` | 离线给章节抽 KG(支持 `--clear` 防累积) |
 | `run_generation.py` | UI 触发 generation job 的执行器(后台 Popen) |
