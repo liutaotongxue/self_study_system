@@ -27,7 +27,7 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 | 一个或多个 LLM provider 的 API key | 详见下方 |
 | 一台现代浏览器 | viewer 前端 |
 
-> **Windows 用户**:本项目同时提供 PowerShell(`.ps1`)和 Bash(`.sh`)启动脚本——用 PowerShell 跑 `.ps1` 即可,**无需额外安装 Git Bash 或 WSL**。如果 PowerShell 首次执行 `.ps1` 被策略挡住,跑一次:`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
+> **Windows 用户**:本项目提供 PowerShell(`.ps1`)启动脚本,**无需 Git Bash 或 WSL**。首次使用请先看下方「[Windows 首次准备](#windows-首次准备)」段(3 个小步骤)。
 
 项目通过 LangChain 抽象层接入 LLM,在 `.env` 配置你要用的 provider key:
 
@@ -35,6 +35,46 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 - `GOOGLE_API_KEY` —— [Google AI Studio](https://aistudio.google.com/app/apikey) 注册
 
 > ⚠️ **API key 与各家的订阅服务(Claude Max / Pro、Gemini Advanced 等)完全无关**——这些订阅覆盖网页/桌面端聊天,API 调用按 token 单独计费。
+
+---
+
+## Windows 首次准备
+
+> macOS / Linux 用户跳过这段。
+
+### 1. 安装 uv
+
+在 PowerShell 跑(无需管理员):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+装完**关掉重开 PowerShell**(让 PATH 生效),`uv --version` 能输出版本号即成功。
+
+### 2. 解锁脚本执行策略
+
+Windows 默认禁止跑 `.ps1` 脚本。打开 PowerShell 跑一次(只需一次):
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+提示输入 `Y` 确认。这只影响**当前用户**,允许本地脚本和签名脚本运行,不影响系统其他用户。
+
+### 3. (可选)装 PowerShell 7+
+
+Windows 自带 PowerShell 5.1 已经够用。如果你想要更好的 Unicode 支持、更现代的语法,可以从 [aka.ms/powershell](https://aka.ms/powershell) 装 PowerShell 7+。
+
+### Windows 常见报错速查
+
+| 报错 | 原因 | 修法 |
+|---|---|---|
+| `uv: 不是内部或外部命令` | uv 没装 / PATH 没生效 | 关掉重开 PowerShell;或回 1 步重装 |
+| `因为在此系统上禁止运行脚本` | ExecutionPolicy 未解锁 | 跑第 2 步命令 |
+| `ModuleNotFoundError: No module named 'pymupdf'`(或其他模块) | 直接跑了 `.\run.ps1` 跳过 setup | 先跑 `.\setup.ps1` |
+| 控制台中文乱码 | PowerShell 输出编码非 UTF-8 | 跑 `chcp 65001` 切 UTF-8,或用 PowerShell 7+ |
+| `git pull` 提示 lockfile 冲突 | 多机协作时 uv.lock 冲突 | 跑 `uv sync` 重新解析即可 |
 
 ---
 
