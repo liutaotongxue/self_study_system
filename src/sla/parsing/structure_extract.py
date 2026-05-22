@@ -1,9 +1,12 @@
 """S2 human-anchored 结构抽取(视觉路径):人选目录页 → 渲染为 PNG →
 一发视觉结构化 LLM 调用 → 写 document_structure。【非 agent、不碰
-graph】,镜像 kg.py 的 ChatAnthropic.with_structured_output(Pydantic).invoke
-单发范式,但以图像消息替代文本(2026-05 路径B探针实测:视觉在 OCR 烂书
-上显著胜文本层 —— doc3 文本层标题半毁→视觉 366 条全洁、页码单增,
-$0.26/书 TOC、~4 分钟级延迟)。
+graph】,with_structured_output(Pydantic).invoke 单发范式,以图像消息
+替代文本(2026-05 路径B探针实测:视觉在 OCR 烂书上显著胜文本层 ——
+doc3 文本层标题半毁→视觉 366 条全洁、页码单增)。
+
+Provider:S4 OCR 已切 Gemini 2.5-flash;S2 TOC 同样视觉任务,2026-05
+跟随切到 Gemini,fork 用户只填 GOOGLE_API_KEY 即可跑通"上传→标目
+录→标内容"前 4 步,Anthropic key 仅生成笔记 + KG 才需要。
 
 承重:chapter_id = "ch" + section_id 在 Python 确定性派生,不信 LLM
 (S3 状态页 LEFT JOIN 命脉;S4 写 Chunk.chapter_id 必须用【同一派生】)。
@@ -14,8 +17,12 @@ import base64
 import re
 
 import pymupdf
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_google_genai import (
+    ChatGoogleGenerativeAI,
+    HarmBlockThreshold,
+    HarmCategory,
+)
 from pydantic import BaseModel, Field
 
 from sla.config import settings
@@ -23,7 +30,16 @@ from sla.harness.prompts import STRUCTURE_EXTRACT_SYSTEM
 from sla.models.domain import Document, DocumentStructure
 
 _SID_RE = re.compile(r"^\d+(\.\d+)*$")
-_RENDER_ZOOM = 1.8           # ≈ 144 DPI;Anthropic 自动下采样到 ~1.15MP/页,CJK 够认
+_RENDER_ZOOM = 1.8           # ≈ 144 DPI;CJK 教材目录够认
+
+# safety_settings BLOCK_NONE:OCR 自己合法教材,不接受任何误判截断
+# (与 content_extract 同策略;两处独立保留 4 行避免跨模块隐式耦合)
+_GEMINI_SAFETY_NONE = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
 
 
 class StructureItem(BaseModel):
@@ -106,7 +122,7 @@ def render_pages_to_b64(file_path: str, pages: list[int]) -> list[str]:
 
 def extract_and_persist(
     db, document_id: int, pages: list[int], force: bool,
-    *, model_name: str = "claude-sonnet-4-6", max_tokens: int = 16000,
+    *, model_name: str = "gemini-2.5-flash", max_tokens: int = 16000,
 ) -> dict:
     """渲染 TOC 页 → 单发视觉结构化 LLM → 写 document_structure。
     幂等:已有行且 ¬force → 跳过(不渲染不调 LLM,省钱,loud);
@@ -134,26 +150,19 @@ def extract_and_persist(
     }]
     for b64 in images_b64:
         content.append({
-            "type": "image",
-            "source_type": "base64",
-            "data": b64,
-            "mime_type": "image/png",
+            "type": "image_url",
+            "image_url": f"data:image/png;base64,{b64}",
         })
 
-    model = ChatAnthropic(
+    model = ChatGoogleGenerativeAI(
         model=model_name,
-        max_tokens=max_tokens,
-        api_key=settings.anthropic_api_key,
+        max_output_tokens=max_tokens,
+        google_api_key=settings.google_api_key,
+        safety_settings=_GEMINI_SAFETY_NONE,
     )
     structured = model.with_structured_output(StructureExtraction)
-    # cache_control:system prompt 跨调用 5min 内命中(图像内容不缓存,
-    # 仅 system 文本块;同书重抽 / 多本相邻时仍省 system 部分)
     result: StructureExtraction = structured.invoke([
-        SystemMessage(content=[{
-            "type": "text",
-            "text": STRUCTURE_EXTRACT_SYSTEM,
-            "cache_control": {"type": "ephemeral"},
-        }]),
+        SystemMessage(content=STRUCTURE_EXTRACT_SYSTEM),
         HumanMessage(content=content),
     ])
 
