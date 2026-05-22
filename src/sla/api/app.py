@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 
 from sla.api import routes_domain, routes_generation, routes_runtime
 
-app = FastAPI(title="Self-Learning Agent", version="0.1.0")
+app = FastAPI(title="Self-Study System", version="0.1.0")
 
 app.include_router(routes_domain.router)
 app.include_router(routes_runtime.router)

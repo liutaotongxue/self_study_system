@@ -1,4 +1,4 @@
-# Self-Learning Agent
+# Self-Study System
 
 把 PDF 教材本地一键学成**知识图谱 / Markdown 笔记**的单用户 Web 工具。
 clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一键生成可视化 KG + 可阅读 Notes。
@@ -152,7 +152,7 @@ bash run.sh
 ## 项目结构
 
 ```
-self-learning-agent/
+self_study_system/
 ├── setup.sh / run.sh           安装 + 启动
 ├── pyproject.toml              依赖声明
 ├── alembic/ + alembic.ini      DB schema 迁移链

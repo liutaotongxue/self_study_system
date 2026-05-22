@@ -1,7 +1,7 @@
 [project]
-name = "self-learning-agent"
+name = "self-study-system"
 version = "0.1.0"
-description = "Self-learning agent that generates notes and questions from PDF textbooks"
+description = "Self-study system that turns PDF textbooks into knowledge graphs and Markdown notes"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
