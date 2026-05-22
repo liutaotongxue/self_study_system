@@ -834,8 +834,8 @@ let _cmpNotes = [];
 async function openCmpPanel() {
   document.getElementById('cmp-overlay').classList.add('active');
   document.body.style.overflow = 'hidden';
-  const pdf = document.getElementById('cmp-pdf');
-  if (!pdf.src) pdf.src = `${API_BASE}/documents/${DOCUMENT_ID}/pdf`;   // 重 PDF 只加载一次
+  // PDF iframe 的 src 不在此初始化,改由 renderById 统一带 #page=N 设置
+  // (基于该章 chunk.page_start)
   let outline = {};
   try {
     const d = await fetch(`${API_BASE}/documents/${DOCUMENT_ID}`).then(r => r.json());
@@ -860,6 +860,8 @@ async function openCmpPanel() {
     `${outline[n.chapter_id] ? ' — ' + outline[n.chapter_id] : ''}</option>`
   ).join('');
   const noteEl = document.getElementById('cmp-note');
+  const pdfEl = document.getElementById('cmp-pdf');
+  const baseUrl = `${API_BASE}/documents/${DOCUMENT_ID}/pdf`;
   const renderById = id => {
     const n = _cmpNotes.find(x => String(x.id) === String(id));
     noteEl.innerHTML = n ? renderMarkdownWithAnchors(n.content_md) : '';
@@ -873,6 +875,10 @@ async function openCmpPanel() {
       if (saved) setTimeout(() => requestAnimationFrame(() => {
         noteEl.scrollTop = saved;
       }), 50);
+      // PDF 跳到该章节起始物理页(标注内容页时填的 p=X-Y 的 X);#page=N 是
+      // 浏览器原生 PDF viewer 的 Open Parameter(Chrome/Firefox/Edge/Safari 都认)。
+      // 无 page_start(老 doc 没标内容页)→ 只设 base URL,不带 fragment。
+      pdfEl.src = n.page_start ? `${baseUrl}#page=${n.page_start}` : baseUrl;
     }
   };
   const sel = document.getElementById('cmp-pick');

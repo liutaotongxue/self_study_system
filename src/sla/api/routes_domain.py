@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from sla.api.routes_generation import UPLOAD_DIR
@@ -47,7 +48,6 @@ def get_domain(domain_id: int, db: Session = Depends(get_db)):
 
 @router.get("/documents")
 def list_documents(domain_id: int | None = None, db: Session = Depends(get_db)):
-    from sqlalchemy import func
     q = db.query(Document)
     if domain_id is not None:
         q = q.filter(Document.domain_id == domain_id)
@@ -201,8 +201,18 @@ def list_notes(document_id: int, chapter_id: str | None = None, db: Session = De
     if chapter_id:
         q = q.filter(Note.chapter_id == chapter_id)
     rows = q.order_by(Note.id.desc()).all()
+    # 每章物理起始页(用户标内容页时输入的 page_start);用于 cmp 面板 PDF 跳页
+    page_map = dict(
+        db.query(Chunk.chapter_id, func.min(Chunk.page_start))
+        .filter(Chunk.document_id == document_id, Chunk.page_start.isnot(None))
+        .group_by(Chunk.chapter_id).all()
+    )
     return [
-        {"id": n.id, "chapter_id": n.chapter_id, "content_md": n.content_md, "created_at": n.created_at.isoformat()}
+        {
+            "id": n.id, "chapter_id": n.chapter_id, "content_md": n.content_md,
+            "created_at": n.created_at.isoformat(),
+            "page_start": page_map.get(n.chapter_id),
+        }
         for n in rows
     ]
 
