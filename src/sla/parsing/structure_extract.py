@@ -43,13 +43,14 @@ _GEMINI_SAFETY_NONE = {
 
 
 class StructureItem(BaseModel):
+    # human-anchored pivot 后,内容页由用户手输(p=50-65),TOC 抽出的页码无人消费
+    # → 删 book_page_start 字段:1) 数据上无 reader 2) JSON 体积小 ~30% → 缓解大书章节
+    # 多导致的 LLM 输出截断(OutputParserException;2026-05 doc 1 计算机组成原理实例)
     section_id: str = Field(
         description="目录里的原始编号串,如 '1' / '1.3' / '6.1.1';"
                     "几级照抄不规整化;确无编号则空字符串 ''")
     title: str = Field(
         description="该条标题,教材原文语言,不翻译不改写")
-    book_page_start: int = Field(
-        description="该条在目录里印的起始页码(整数);确无则 0")
 
 
 class StructureExtraction(BaseModel):
@@ -122,7 +123,7 @@ def render_pages_to_b64(file_path: str, pages: list[int]) -> list[str]:
 
 def extract_and_persist(
     db, document_id: int, pages: list[int], force: bool,
-    *, model_name: str = "gemini-2.5-flash", max_tokens: int = 16000,
+    *, model_name: str = "gemini-2.5-flash", max_tokens: int = 32000,
 ) -> dict:
     """渲染 TOC 页 → 单发视觉结构化 LLM → 写 document_structure。
     幂等:已有行且 ¬force → 跳过(不渲染不调 LLM,省钱,loud);
@@ -187,7 +188,7 @@ def extract_and_persist(
             section_id=it.section_id.strip(),
             chapter_id=cid,
             title=(it.title or "").strip(),
-            book_page_start=it.book_page_start or 0,
+            book_page_start=0,    # 字段保留(NOT NULL),恒置 0;无 reader 故无副作用
             source="llm",
         ))
         inserted += 1
