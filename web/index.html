@@ -859,14 +859,30 @@ async function openCmpPanel() {
     `<option value="${n.id}">${n.chapter_id}` +
     `${outline[n.chapter_id] ? ' — ' + outline[n.chapter_id] : ''}</option>`
   ).join('');
+  const noteEl = document.getElementById('cmp-note');
   const renderById = id => {
     const n = _cmpNotes.find(x => String(x.id) === String(id));
-    document.getElementById('cmp-note').innerHTML =
-      n ? renderMarkdownWithAnchors(n.content_md) : '';
+    noteEl.innerHTML = n ? renderMarkdownWithAnchors(n.content_md) : '';
+    if (n && n.chapter_id) {
+      // 记下"上次看的章节",下次开 cmp 自动跳回来
+      localStorage.setItem(`cmp_last_chapter_${DOCUMENT_ID}`, n.chapter_id);
+      // 恢复 note 内的滚动位置(双 setTimeout/RAF 等 KaTeX 渲染完 + 一帧 layout 就位)
+      const saved = parseInt(
+        localStorage.getItem(`cmp_note_scroll_${DOCUMENT_ID}_${n.chapter_id}`) || '0', 10,
+      );
+      if (saved) setTimeout(() => requestAnimationFrame(() => {
+        noteEl.scrollTop = saved;
+      }), 50);
+    }
   };
   const sel = document.getElementById('cmp-pick');
   sel.onchange = () => renderById(sel.value);
-  renderById(uniq[0].id);
+  // 恢复上次选过的 chapter,否则首个
+  const lastCh = localStorage.getItem(`cmp_last_chapter_${DOCUMENT_ID}`);
+  const lastNote = lastCh && _cmpNotes.find(n => n.chapter_id === lastCh);
+  const startId = lastNote ? lastNote.id : uniq[0].id;
+  sel.value = startId;
+  renderById(startId);
 }
 function closeCmpPanel() {
   document.getElementById('cmp-overlay').classList.remove('active');
@@ -1216,6 +1232,25 @@ document.getElementById('cmp-close').addEventListener('click', closeCmpPanel);
     body.classList.toggle('swapped');
     localStorage.setItem('cmp_swapped',
       body.classList.contains('swapped') ? '1' : '0');
+  });
+})();
+// note 滚动位置持久化(per-doc + per-chapter,debounce 300ms 防写爆)
+(() => {
+  const noteEl = document.getElementById('cmp-note');
+  let _scrollTimer;
+  noteEl.addEventListener('scroll', () => {
+    clearTimeout(_scrollTimer);
+    _scrollTimer = setTimeout(() => {
+      const id = document.getElementById('cmp-pick').value;
+      if (!id || !_cmpNotes) return;
+      const n = _cmpNotes.find(x => String(x.id) === String(id));
+      if (n && n.chapter_id) {
+        localStorage.setItem(
+          `cmp_note_scroll_${DOCUMENT_ID}_${n.chapter_id}`,
+          String(noteEl.scrollTop),
+        );
+      }
+    }, 300);
   });
 })();
 document.addEventListener('keydown', (e) => {
