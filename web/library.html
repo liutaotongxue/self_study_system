@@ -34,7 +34,7 @@
   <div class="sec">
     <h2>上传书籍</h2>
     <input id="up-file" type="file" accept="application/pdf,.pdf">
-    <div class="ph-note" id="up-status">选一个 PDF 即上传(仅登记,不立即解析)。完成后出现在下方书库显「未处理」;点「处理本书」才整本切块。</div>
+    <div class="ph-note" id="up-status">选一个 PDF 即上传(仅登记,不立即解析)。完成后出现在下方书库,点书名进入,在「章节状态」标注目录开始处理。</div>
   </div>
 
   <div class="sec">
@@ -65,22 +65,14 @@ function bookRow(d) {
     : (d.status === 'ready'
        ? '<span class="m" style="color:#888">○ 未标注目录</span>'
        : '<span class="m" style="color:#C00000">⚠ 未处理</span>');
-  if (d.status === 'ready') {
-    return `<a class="book" href="/viewer?doc=${d.id}">
-       <span class="t">${d.title || ('document ' + d.id)}</span>
-       ${statusLabel}
-       ${toc}
-       ${del}
-     </a>`;
-  }
-  return `<div class="book" style="cursor:default">
-       <span class="t">${d.title || ('document ' + d.id)}</span>
-       ${statusLabel}
-       <button class="proc-btn" data-id="${d.id}"
-         style="padding:5px 12px;font-size:12px;cursor:pointer">处理本书</button>
-       ${toc}
-       ${del}
-     </div>`;
+  // human-anchored pivot 后所有 doc 走统一 <a>:点书名进 viewer → 章节状态 → 标目录 →
+  // 标内容页 → 生成。删了旧的「处理本书」(整本 /process)分支,功能与 doc.status 解耦。
+  return `<a class="book" href="/viewer?doc=${d.id}">
+     <span class="t">${d.title || ('document ' + d.id)}</span>
+     ${statusLabel}
+     ${toc}
+     ${del}
+   </a>`;
 }
 
 function loadBooks() {
@@ -91,8 +83,7 @@ function loadBooks() {
       return;
     }
     el.innerHTML = docs.map(bookRow).join('');
-    el.querySelectorAll('.proc-btn').forEach(b =>
-      b.addEventListener('click', () => startProcess(b.getAttribute('data-id'), b)));
+    // 旧 .proc-btn 已删,无 handler 需绑
     el.querySelectorAll('.del-btn').forEach(b =>
       b.addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();          // 别触发 ready 行的 <a> 跳转
@@ -130,7 +121,7 @@ document.getElementById('up-file').addEventListener('change', (ev) => {
       return;
     }
     _ust().textContent = '✓ 已上传:' + (b.title || ('document ' + b.document_id)) +
-      ' —— 在下方书库点「处理本书」开始解析。';
+      ' —— 在下方书库点书名进入,从「章节状态」开始标注。';
     loadBooks();
   }).catch(e => {
     ev.target.value = '';
@@ -178,24 +169,6 @@ function _pollProcess(jobId, docId) {
   }).catch(() => setTimeout(() => _pollProcess(jobId, docId), 3000));
 }
 
-function startProcess(docId, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
-  _pst().textContent = '处理中…(整本切块,约数十秒,勿关本页)';
-  fetch('/documents/' + docId + '/process', { method: 'POST' }).then(async r => {
-    const b = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      _pst().innerHTML = '<span style="color:#C00000">✕ ' +
-        (b.detail || ('HTTP ' + r.status)) + '</span>' +
-        (r.status === 409 ? '(一次一个,等当前任务结束再点)' : '');
-      if (btn) { btn.disabled = false; btn.textContent = '处理本书'; }
-      return;
-    }
-    _pollProcess(b.job_id, docId);
-  }).catch(e => {
-    _pst().innerHTML = '<span style="color:#C00000">✕ ' + e.message + '</span>';
-    if (btn) { btn.disabled = false; btn.textContent = '处理本书'; }
-  });
-}
 
 function startExtractStructure(docId, btn) {
   const toc = prompt('该书目录在 PDF 的第几页?(物理页号,如 7-10 或 7,8,9)\n' +
