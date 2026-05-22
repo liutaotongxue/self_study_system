@@ -25,6 +25,48 @@
   .book .m { font-size:12px; color:#888; }
   .empty { color:#888; font-size:14px; line-height:1.7; }
   .empty code { background:#eee; padding:1px 5px; border-radius:3px; }
+
+  /* TOC 预览 modal($0 缩略图 → 用户确认才付费抽取) */
+  #tp-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.5); z-index: 1100;
+    align-items: center; justify-content: center;
+  }
+  #tp-overlay.active { display: flex; }
+  #tp-modal {
+    background: white; border-radius: 6px;
+    width: 90%; max-width: 1100px; max-height: 90vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 4px 24px rgba(0,0,0,.2);
+  }
+  #tp-header {
+    padding: 12px 20px; border-bottom: 1px solid #ddd;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #tp-title { font-size: 15px; color: #222; }
+  #tp-meta { font-size: 12px; color: #666; }
+  #tp-grid {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px; background: #f7f7f7;
+  }
+  .tp-thumb { background: white; border: 1px solid #ddd; border-radius: 4px;
+              padding: 6px; }
+  .tp-thumb img { width: 100%; height: auto; display: block; }
+  .tp-thumb .tp-pg { font-size: 11px; color: #555; margin-bottom: 4px;
+                     text-align: center; font-weight: 600; }
+  #tp-actions {
+    padding: 12px 20px; border-top: 1px solid #ddd; text-align: right;
+  }
+  #tp-actions button {
+    padding: 6px 16px; font-size: 13px; margin-left: 8px;
+    border: 1px solid #bbb; border-radius: 4px; cursor: pointer; background: white;
+  }
+  #tp-confirm { background: #1F3864 !important; color: white !important;
+                border-color: #1F3864 !important; }
+  #tp-confirm:hover { background: #2a4a80 !important; }
+  #tp-cancel:hover { background: #eee; }
 </style>
 </head>
 <body>
@@ -49,6 +91,22 @@
   </div>
 
 </main>
+
+<!-- TOC $0 预览 modal -->
+<div id="tp-overlay">
+  <div id="tp-modal">
+    <div id="tp-header">
+      <span id="tp-title">目录页预览</span>
+      <span id="tp-meta"></span>
+    </div>
+    <div id="tp-grid">loading…</div>
+    <div id="tp-actions">
+      <button id="tp-cancel" type="button">取消</button>
+      <button id="tp-confirm" type="button">确认抽取</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const _ust = () => document.getElementById('up-status');
 const _pst = () => document.getElementById('proc-status');
@@ -170,31 +228,87 @@ function _pollProcess(jobId, docId) {
 }
 
 
-function startExtractStructure(docId, btn) {
+async function startExtractStructure(docId, btn) {
   const toc = prompt('该书目录在 PDF 的第几页?(物理页号,如 7-10 或 7,8,9)\n' +
     '需先用 PDF 阅读器看一眼目录在第几物理页。');
   if (!toc || !toc.trim()) return;
-  const force = confirm('该书若已抽过结构:\n确定 = 强制重抽并覆盖;' +
-    '取消 = 保留已有(跳过)。\n首次抽取两者等价。');
-  if (btn) { btn.disabled = true; btn.textContent = '抽取中…'; }
-  _pst().textContent = '抽取章节结构中…(视觉单次 LLM,约 3-5 分钟,勿关本页)';
-  fetch('/documents/' + docId + '/extract-structure?toc=' +
-        encodeURIComponent(toc.trim()) + '&force=' + (force ? 'true' : 'false'),
-        { method: 'POST' }).then(async r => {
+  const tocTrim = toc.trim();
+
+  // C-方案 $0 预览-确认 modal:付费 LLM 前看一眼这几页是不是真目录
+  const tpOverlay = document.getElementById('tp-overlay');
+  const tpGrid = document.getElementById('tp-grid');
+  const tpMeta = document.getElementById('tp-meta');
+  const tpConfirm = document.getElementById('tp-confirm');
+  const tpCancel = document.getElementById('tp-cancel');
+  tpGrid.innerHTML = '<div style="color:#666;padding:20px">loading…</div>';
+  tpMeta.textContent = 'doc ' + docId + ' · p=' + tocTrim;
+  tpOverlay.classList.add('active');
+
+  const closeTp = () => {
+    tpOverlay.classList.remove('active');
+    tpGrid.innerHTML = '';
+    tpConfirm.onclick = null;
+    tpCancel.onclick = null;
+  };
+  tpCancel.onclick = closeTp;
+
+  // 拉缩略图
+  let thumbs;
+  try {
+    const url = `/documents/${docId}/page-thumbs?pages=${encodeURIComponent(tocTrim)}`;
+    const r = await fetch(url);
     const b = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      _pst().innerHTML = '<span style="color:#C00000">✕ ' +
-        (b.detail || ('HTTP ' + r.status)) + '</span>' +
-        (r.status === 409 ? '(一次一个任务,等当前结束再试)' : '');
+    if (!r.ok) throw new Error(b.detail || `HTTP ${r.status}`);
+    thumbs = b.pages || [];
+  } catch (e) {
+    tpGrid.innerHTML =
+      '<div style="color:#C00000;padding:20px">预览失败:' +
+      e.message + '<br>(可取消重输页号)</div>';
+    return;
+  }
+
+  tpGrid.innerHTML = thumbs.map(t =>
+    '<div class="tp-thumb">' +
+      '<div class="tp-pg">p' + t.page + '</div>' +
+      '<img src="data:image/jpeg;base64,' + t.data + '" alt="page ' + t.page + '">' +
+    '</div>'
+  ).join('');
+  tpMeta.textContent = 'doc ' + docId + ' · p=' + tocTrim + ' · ' + thumbs.length + ' 页';
+
+  // 用户确认抽取 → 关 modal → force confirm → POST
+  tpConfirm.onclick = () => {
+    closeTp();
+    const force = confirm('该书若已抽过结构:\n确定 = 强制重抽并覆盖;' +
+      '取消 = 保留已有(跳过)。\n首次抽取两者等价。');
+    if (btn) { btn.disabled = true; btn.textContent = '抽取中…'; }
+    _pst().textContent = '抽取章节结构中…(视觉单次 LLM,约 3-5 分钟,勿关本页)';
+    fetch('/documents/' + docId + '/extract-structure?toc=' +
+          encodeURIComponent(tocTrim) + '&force=' + (force ? 'true' : 'false'),
+          { method: 'POST' }).then(async r => {
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        _pst().innerHTML = '<span style="color:#C00000">✕ ' +
+          (b.detail || ('HTTP ' + r.status)) + '</span>' +
+          (r.status === 409 ? '(一次一个任务,等当前结束再试)' : '');
+        if (btn) { btn.disabled = false; btn.textContent = '📑 标注目录'; }
+        return;
+      }
+      _pollProcess(b.job_id, docId);
+    }).catch(e => {
+      _pst().innerHTML = '<span style="color:#C00000">✕ ' + e.message + '</span>';
       if (btn) { btn.disabled = false; btn.textContent = '📑 标注目录'; }
-      return;
-    }
-    _pollProcess(b.job_id, docId);
-  }).catch(e => {
-    _pst().innerHTML = '<span style="color:#C00000">✕ ' + e.message + '</span>';
-    if (btn) { btn.disabled = false; btn.textContent = '📑 标注目录'; }
-  });
+    });
+  };
 }
+
+// ESC 关 tp-overlay(库内唯一 modal,简单专项 listener)
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const tp = document.getElementById('tp-overlay');
+  if (tp.classList.contains('active')) {
+    document.getElementById('tp-cancel').click();
+  }
+});
 </script>
 </body>
 </html>
