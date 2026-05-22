@@ -486,7 +486,14 @@ function scrollToAnchor(container, slug) {
   if (!container || !slug) return false;
   const el = container.querySelector(`[data-slug="${CSS.escape(slug)}"]`);
   if (!el) return false;
-  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // 严格只滚 container,不用 el.scrollIntoView()——后者会冒泡滚所有可滚
+  // ancestor(含 documentElement),即使 body 是 overflow:hidden。doc 4 触发整页位移 bug。
+  const elRect = el.getBoundingClientRect();
+  const cnRect = container.getBoundingClientRect();
+  container.scrollTo({
+    top: elRect.top - cnRect.top + container.scrollTop,
+    behavior: 'smooth',
+  });
   // brief highlight 表示目标
   const orig = el.style.backgroundColor;
   el.style.transition = 'background-color 0.4s ease-out';
