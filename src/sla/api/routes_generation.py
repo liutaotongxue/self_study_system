@@ -181,8 +181,8 @@ async def upload_pdf(
     """P2:网页上传新书 = 仅登记(存盘 + 建 Document,status='uploaded'),不解析。
 
     解耦设计:upload 不起 job → 无 _start → 无 409 → 结构性消解空壳书问题。
-    书随即出现在书库显「未处理」;用户点「处理本书」才触发整本 ingest
-    (POST /documents/{id}/process)。'uploaded' 是显式正常态,非错误。
+    书随即出现在书库;用户点书名进 viewer,从「章节状态」抽 TOC → 标内容页
+    → 生成,human-anchored 节级流程。'uploaded' 是显式正常态,非错误。
     """
     name = Path(file.filename or "").name              # 去目录成分 → 无路径穿越
     if not name.lower().endswith(".pdf"):
@@ -207,16 +207,6 @@ async def upload_pdf(
         db.commit()
         db.refresh(doc)
     return {"document_id": doc.id, "title": doc.title, "status": doc.status}
-
-
-@router.post("/documents/{document_id}/process", status_code=202)
-def process_document(document_id: int, db: Session = Depends(get_db)):
-    """P2:对已上传未处理的书触发整本 ingest(--chapter all),复用 _start。
-
-    409(已有 job 在跑)benign:Document upload 时已建,稍后重点即可、无空壳。
-    run_generation ingest 分支成功后置 doc.status='ready'。
-    """
-    return _start(document_id, "all", "ingest", db)
 
 
 @router.get("/generation-jobs/{job_id}")
