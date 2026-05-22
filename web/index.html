@@ -284,16 +284,21 @@
   }
   #cmp-header strong { font-size: 16px; }
   #cmp-header select { padding: 4px 8px; font-size: 13px; }
-  #cmp-close {
-    margin-left: auto; cursor: pointer; padding: 6px 14px; font-size: 13px;
+  #cmp-swap, #cmp-close {
+    cursor: pointer; padding: 6px 14px; font-size: 13px;
     border: 1px solid #bbb; border-radius: 4px; background: white;
   }
+  #cmp-swap { margin-left: auto; }
+  #cmp-close { margin-left: 0; }
+  #cmp-swap:hover { background: #eef; border-color: #5B9BD5; color: #1F3864; }
   #cmp-close:hover { background: #fee; border-color: #C00000; color: #C00000; }
   #cmp-body { flex: 1; min-height: 0; display: flex; }
+  #cmp-body.swapped { flex-direction: row-reverse; }
   #cmp-note {
     width: 45%; overflow-y: auto; padding: 20px 28px;
     border-right: 1px solid #ddd; font-size: 14px; line-height: 1.7;
   }
+  #cmp-body.swapped #cmp-note { border-right: none; border-left: 1px solid #ddd; }
   #cmp-note h1 { font-size: 22px; margin-top: 18px; }
   #cmp-note h2 { font-size: 18px; margin-top: 16px; }
   #cmp-note h3 { font-size: 15px; margin-top: 14px; }
@@ -393,6 +398,7 @@
   <div id="cmp-header">
     <strong>Note ↔ 教材原文对照</strong>
     <select id="cmp-pick"></select>
+    <button id="cmp-swap" type="button" title="调换左右两栏">⇄ 调换左右</button>
     <button id="cmp-close" type="button">✕ 关闭 (ESC)</button>
   </div>
   <div id="cmp-body">
@@ -1202,6 +1208,16 @@ document.getElementById('chap-btn').addEventListener('click', openChapPanel);
 document.getElementById('chap-close').addEventListener('click', closeChapPanel);
 document.getElementById('cmp-btn').addEventListener('click', openCmpPanel);
 document.getElementById('cmp-close').addEventListener('click', closeCmpPanel);
+// 原文对照左右调换 + localStorage 记忆偏好(per-browser,跨 doc 持久)
+(() => {
+  const body = document.getElementById('cmp-body');
+  if (localStorage.getItem('cmp_swapped') === '1') body.classList.add('swapped');
+  document.getElementById('cmp-swap').addEventListener('click', () => {
+    body.classList.toggle('swapped');
+    localStorage.setItem('cmp_swapped',
+      body.classList.contains('swapped') ? '1' : '0');
+  });
+})();
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   // 叠放优先级:tp(预览,z-index 1100,在 chap-overlay 上)> fs > notes > chap
