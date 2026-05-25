@@ -1,22 +1,24 @@
 # Self-Study System
 
-把 PDF 教材本地一键学成**知识图谱 / Markdown 笔记**的单用户 Web 工具。
-clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一键生成可视化 KG + 可阅读 Notes。
+A single-user, clone-and-run local web tool that turns any PDF textbook into
+a **knowledge graph + Markdown notes**. Upload a PDF, mark chapter boundaries,
+and the system auto-generates a navigable KG and readable notes — all locally,
+no cloud, no account.
 
 ---
 
-## 架构总览
+## Architecture
 
 ```mermaid
 flowchart TD
-    Upload["上传 PDF<br/>(主页)"] --> S2["S2 · 标 TOC 页范围<br/>(人工)"]
-    S2 -->|"视觉 LLM<br/>Gemini 2.5-flash"| Struct[("document_structure 表")]
-    Struct --> S4["S4 · 标某节内容页<br/>(人工)"]
-    S4 -->|"视觉 OCR<br/>Gemini 2.5-flash"| Chunks[("chunk 表")]
-    Chunks --> S5a["S5a · 学习 Agent<br/>(LangGraph harness)"]
-    S5a -->|"工具链<br/>list_chunks → read_chunk<br/>→ save_note → save_questions"| Notes[("note 表")]
-    Notes --> S5b["S5b · KG 抽取<br/>(structured output)"]
-    S5b -->|"Claude Sonnet 4.6<br/>+ Pydantic Schema"| KG[("kg_node + kg_edge 表")]
+    Upload["Upload PDF<br/>(home page)"] --> S2["S2 · Mark TOC pages<br/>(human)"]
+    S2 -->|"Vision LLM<br/>Gemini 2.5-flash"| Struct[("document_structure table")]
+    Struct --> S4["S4 · Mark section content pages<br/>(human)"]
+    S4 -->|"Vision OCR<br/>Gemini 2.5-flash"| Chunks[("chunk table")]
+    Chunks --> S5a["S5a · Learning Agent<br/>(LangGraph harness)"]
+    S5a -->|"Tool chain<br/>list_chunks → read_chunk<br/>→ save_note → save_questions"| Notes[("note table")]
+    Notes --> S5b["S5b · KG extraction<br/>(structured output)"]
+    S5b -->|"Claude Sonnet 4.6<br/>+ Pydantic Schema"| KG[("kg_node + kg_edge table")]
     KG --> Viewer["Viewer<br/>vis-network + KaTeX"]
     Notes --> Viewer
 
@@ -25,86 +27,107 @@ flowchart TD
     style KG fill:#DCFCE7,stroke:#16A34A
 ```
 
-- **人工标注边界**(S2 / S4):用户用 5 秒标章节页范围,代替全自动 agent 在 OCR-烂书上易飘移的章节切分
-- **LangGraph agent harness**(S5a):StateGraph `agent ↔ tool_node` 循环驱动笔记生成
-- **KG 强契约抽取**(S5b):Pydantic Schema × `with_structured_output()` × 服务端二次校验
+- **Human-anchored boundaries** (S2 / S4): user spends 5 seconds marking
+  chapter page ranges, replacing fully-autonomous agents that drift on
+  OCR-degraded scans.
+- **LangGraph agent harness** (S5a): StateGraph `agent ↔ tool_node` loop
+  drives note generation through a 4-tool chain.
+- **Strict-contract KG extraction** (S5b): Pydantic Schema ×
+  `with_structured_output()` × server-side validation to drop hallucinated
+  relations.
 
 ---
 
-## 它能做什么
+## What it does
 
-- **上传 PDF**:你的教材本地保存(不入 git)
-- **抽目录**:你选目录所在页,LLM 一发抽出全书章节结构
-- **章节 OCR**:你选某节内容页,视觉 LLM 把扫描页 OCR 成 markdown
-- **生成笔记**:LLM 按内容生成 markdown 学习笔记(支持 LaTeX 公式)
-- **构建知识图谱**:从笔记抽出 concepts + relations,vis-network 可视化
-- **导出 Notes**:一键下载 zip(一节一 `.md`,Obsidian / Typora 友好)
+- **Upload PDF**: your textbook stays local (never committed to git).
+- **Extract TOC**: pick the table-of-contents pages, an LLM extracts the
+  full chapter structure in one shot.
+- **Section OCR**: pick a section's content pages, a vision LLM OCRs them
+  into clean markdown.
+- **Generate notes**: an LLM produces a markdown study note per section
+  (LaTeX math supported).
+- **Build knowledge graph**: concepts and relations are extracted from each
+  note and visualized via vis-network.
+- **Export notes**: one-click zip download (one `.md` per section,
+  Obsidian / Typora friendly).
 
-每一步都在网页里点;终端只为安装。
+Everything happens in the browser after install; the terminal is only used
+for setup.
 
 ---
 
-## 前置要求
+## Prerequisites
 
-| 工具 | 用途 |
+| Tool | Purpose |
 |---|---|
-| Python ≥ 3.11 | 后端运行时 |
-| [uv](https://docs.astral.sh/uv/) | 依赖管理 |
-| 一个或多个 LLM provider 的 API key | 详见下方 |
-| 一台现代浏览器 | viewer 前端 |
+| Python ≥ 3.11 | Backend runtime |
+| [uv](https://docs.astral.sh/uv/) | Dependency management |
+| One or more LLM provider API keys | See below |
+| A modern browser | Viewer frontend |
 
-> **Windows 用户**:本项目提供 PowerShell(`.ps1`)启动脚本,**无需 Git Bash 或 WSL**。首次使用请先看下方「[Windows 首次准备](#windows-首次准备)」段(3 个小步骤)。
+> **Windows users**: PowerShell launch scripts (`.ps1`) are provided —
+> **no Git Bash or WSL needed**. First-time setup has 3 small steps,
+> see the [Windows quickstart](#windows-quickstart) below.
 
-项目通过 LangChain 抽象层接入 LLM,在 `.env` 配置你要用的 provider key:
+The project routes LLM calls through LangChain abstractions, so you can
+configure any provider's key in `.env`:
 
-- `ANTHROPIC_API_KEY` —— [获取](https://console.anthropic.com/)
-- `GOOGLE_API_KEY` —— [获取](https://aistudio.google.com/app/apikey)
+- `ANTHROPIC_API_KEY` — [get a key](https://console.anthropic.com/)
+- `GOOGLE_API_KEY` — [get a key](https://aistudio.google.com/app/apikey)
 
-> **提示**:API key 用于**按 token 计费的 API 调用**,与各家的网页/桌面聊天订阅产品(若有)完全无关——后者覆盖不到 API。
+> **Note**: an API key is for **per-token paid API calls**, completely
+> separate from each vendor's web/desktop chat subscription products
+> (if any) — those do not cover API usage.
 
 ---
 
-## Windows 首次准备
+## Windows quickstart
 
-> macOS / Linux 用户跳过这段。
+> macOS / Linux users can skip this section.
 
-### 1. 安装 uv
+### 1. Install uv
 
-在 PowerShell 跑(无需管理员):
+Run in PowerShell (no admin required):
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-装完**关掉重开 PowerShell**(让 PATH 生效),`uv --version` 能输出版本号即成功。
+**Close and reopen PowerShell** after install (to refresh PATH), then
+verify with `uv --version`.
 
-### 2. 解锁脚本执行策略
+### 2. Unlock script execution policy
 
-Windows 默认禁止跑 `.ps1` 脚本。打开 PowerShell 跑一次(只需一次):
+Windows blocks `.ps1` scripts by default. Run once in PowerShell:
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-提示输入 `Y` 确认。这只影响**当前用户**,允许本地脚本和签名脚本运行,不影响系统其他用户。
+Type `Y` to confirm. This only affects the **current user** and allows
+local + signed scripts to run; it does not affect other users on the
+system.
 
-### 3. (可选)装 PowerShell 7+
+### 3. (Optional) Install PowerShell 7+
 
-Windows 自带 PowerShell 5.1 已经够用。如果你想要更好的 Unicode 支持、更现代的语法,可以从 [aka.ms/powershell](https://aka.ms/powershell) 装 PowerShell 7+。
+The built-in PowerShell 5.1 on Windows is sufficient. If you want better
+Unicode support and modern syntax, get PowerShell 7+ from
+[aka.ms/powershell](https://aka.ms/powershell).
 
-### Windows 常见报错速查
+### Common Windows errors
 
-| 报错 | 原因 | 修法 |
+| Error | Cause | Fix |
 |---|---|---|
-| `uv: 不是内部或外部命令` | uv 没装 / PATH 没生效 | 关掉重开 PowerShell;或回 1 步重装 |
-| `因为在此系统上禁止运行脚本` | ExecutionPolicy 未解锁 | 跑第 2 步命令 |
-| `ModuleNotFoundError: No module named 'pymupdf'`(或其他模块) | 直接跑了 `.\run.ps1` 跳过 setup | 先跑 `.\setup.ps1` |
-| 控制台中文乱码 | PowerShell 输出编码非 UTF-8 | 跑 `chcp 65001` 切 UTF-8,或用 PowerShell 7+ |
-| `git pull` 提示 lockfile 冲突 | 多机协作时 uv.lock 冲突 | 跑 `uv sync` 重新解析即可 |
+| `uv: not recognized as an internal or external command` | uv not installed / PATH not refreshed | Close and reopen PowerShell, or reinstall (step 1) |
+| `cannot be loaded because running scripts is disabled` | ExecutionPolicy not unlocked | Run step 2 |
+| `ModuleNotFoundError: No module named 'pymupdf'` (or others) | Ran `.\run.ps1` before `.\setup.ps1` | Run `.\setup.ps1` first |
+| Garbled Chinese in console output | PowerShell output encoding is not UTF-8 | Run `chcp 65001`, or use PowerShell 7+ |
+| `git pull` reports lockfile conflict | `uv.lock` conflict from multi-machine work | Run `uv sync` to re-resolve |
 
 ---
 
-## 一次性安装
+## One-time install
 
 ```bash
 git clone https://github.com/liutaotongxue/self_study_system.git
@@ -123,16 +146,17 @@ bash setup.sh
 .\setup.ps1
 ```
 
-无论哪个,都会:
-1. `uv sync` 安装依赖
-2. 复制 `.env.example` → `.env`(若不存在)
-3. `alembic upgrade head` 建本地 SQLite DB
+Either script will:
+1. `uv sync` to install dependencies.
+2. Copy `.env.example` → `.env` (only if it doesn't exist).
+3. `alembic upgrade head` to create the local SQLite DB.
 
-跑完按提示编辑 `.env`,填 `ANTHROPIC_API_KEY` 和 `GOOGLE_API_KEY`。
+When done, follow the prompt to edit `.env` and fill in
+`ANTHROPIC_API_KEY` and `GOOGLE_API_KEY`.
 
 ---
 
-## 启动
+## Run
 
 **macOS / Linux**:
 
@@ -146,85 +170,91 @@ bash run.sh
 .\run.ps1
 ```
 
-打开浏览器 `http://localhost:8000/`。绑 `127.0.0.1:8000`,**不暴露网络**(单机单用户)。
+Open your browser at `http://localhost:8000/`. The server binds to
+`127.0.0.1:8000` and is **not exposed to the network** (single-machine,
+single-user).
 
 ---
 
-## 使用流程
+## Workflow
 
-| 步 | 在哪 | 做什么 |
+| Step | Where | What |
 |---|---|---|
-| 1 | 主页 `/` | 上传 PDF(只登记,不解析) |
-| 2 | viewer `/index.html?doc=N` → 章节状态 | 输入目录所在页(如 `7-10`)→ LLM 抽全书结构 |
-| 3 | 章节状态页 | 给某节填内容页(如 `28-35`)→ 缩略图预览确认 → 视觉 OCR + 切块 |
-| 4 | 章节状态页 | 点「生成」→ LLM 出 markdown 笔记 + KG |
-| 5 | viewer | 看图、点节点读笔记、导出 Notes zip |
+| 1 | Home page `/` | Upload PDF (registered only, not parsed yet) |
+| 2 | Viewer `/index.html?doc=N` → Chapter status | Enter TOC page range (e.g. `7-10`) → LLM extracts the full structure |
+| 3 | Chapter status page | Fill in a section's content pages (e.g. `28-35`) → preview thumbnails to confirm → vision OCR + chunking |
+| 4 | Chapter status page | Click "Generate" → LLM produces markdown notes + KG |
+| 5 | Viewer | Browse the graph, click nodes to read notes, export notes zip |
 
 ---
 
-## 技术栈
+## Tech stack
 
-| 层 | 技术 |
+| Layer | Tech |
 |---|---|
-| 后端 | FastAPI + SQLAlchemy 2.0 + Alembic + SQLite |
-| LLM 编排 | LangGraph + LangChain(多 provider 抽象) |
-| PDF 处理 | pymupdf |
-| 前端 | 原生 HTML/JS + marked(markdown) + KaTeX(数学公式) + vis-network(KG) |
+| Backend | FastAPI + SQLAlchemy 2.0 + Alembic + SQLite |
+| LLM orchestration | LangGraph + LangChain (multi-provider abstraction) |
+| PDF processing | pymupdf |
+| Frontend | Vanilla HTML/JS + marked (markdown) + KaTeX (math) + vis-network (KG) |
 
-零打包 / 零构建步骤——前端就是 3 个静态 HTML 文件。
+Zero bundling / zero build steps — the frontend is just three static HTML
+files.
 
 ---
 
-## 项目结构
+## Project layout
 
 ```
 self_study_system/
-├── setup.sh / run.sh           安装 + 启动
-├── pyproject.toml              依赖声明
-├── alembic/ + alembic.ini      DB schema 迁移链
-├── src/sla/                    后端源码
-│   ├── api/                    FastAPI 路由
-│   ├── models/                 SQLAlchemy 模型
-│   ├── harness/                LangGraph agent harness + KG 抽取
-│   ├── parsing/                PDF 渲染 / TOC / 内容 OCR
+├── setup.sh / run.sh           Install + launch (POSIX)
+├── setup.ps1 / run.ps1         Install + launch (Windows)
+├── pyproject.toml              Dependency declaration
+├── alembic/ + alembic.ini      DB schema migration chain
+├── src/sla/                    Backend source
+│   ├── api/                    FastAPI routes
+│   ├── models/                 SQLAlchemy models
+│   ├── harness/                LangGraph agent harness + KG extraction
+│   ├── parsing/                PDF rendering / TOC / content OCR
 │   └── runtime/                runner / task / event
-├── web/                        前端(index.html / library.html / process.html)
-├── scripts/                    CLI 工具(ingest / study_book / build_kg / ...)
-└── tests/                      pytest 测试
+├── web/                        Frontend (index.html / library.html / process.html)
+├── scripts/                    CLI tools (ingest / study_book / build_kg / ...)
+└── tests/                      pytest suite
 ```
 
-数据在本地:`app.db`(SQLite) + 用户原 PDF 的绝对路径,都不入 git。
+Local data: `app.db` (SQLite) and the absolute paths to user PDFs. Neither
+is committed to git.
 
 ---
 
-## 开发
+## Development
 
 ```bash
-# 热重载(改码自动重启)
+# Hot reload (auto-restart on code change)
 uv run uvicorn sla.api.app:app --reload
 
-# 运行测试(71 tests)
+# Run tests (71 tests)
 uv run pytest tests/
 
-# DB 迁移(改 model 后)
+# DB migration (after editing models)
 uv run alembic revision --autogenerate -m "..."
 uv run alembic upgrade head
 ```
 
-主要 CLI 工具(都在 `scripts/`):
+Main CLI tools (all under `scripts/`):
 
-| 脚本 | 作用 |
+| Script | Purpose |
 |---|---|
-| `ingest_pdf.py` | 离线把 PDF 灌入 DB(网页端等价于上传 + 抽目录) |
-| `study_book.py` | 离线给章节生成 markdown 笔记 |
-| `build_kg.py` | 离线给章节抽 KG(支持 `--clear` 防累积) |
-| `run_generation.py` | UI 触发 generation job 的执行器(后台 Popen) |
+| `ingest_pdf.py` | Offline PDF ingestion into the DB (equivalent to web upload + TOC extraction) |
+| `study_book.py` | Generate markdown notes for a chapter offline |
+| `build_kg.py` | Extract KG for a chapter offline (supports `--clear` to prevent accumulation) |
+| `run_generation.py` | Executor for UI-triggered generation jobs (background Popen) |
 
 ---
 
-## 卸载
+## Uninstall
 
-项目完全自包含,卸载只需删目录:
+The project is fully self-contained. To uninstall, just remove the
+directory:
 
 ```bash
 # macOS / Linux / Git Bash
@@ -234,12 +264,15 @@ rm -rf self_study_system
 Remove-Item -Recurse -Force self_study_system
 ```
 
-所有数据(`app.db`、`.env`、`.venv/`、`uploads/`)都在项目目录内,一并清除。**不会**残留任何系统级文件、服务或全局包。
+All data (`app.db`, `.env`, `.venv/`, `uploads/`) lives inside the project
+directory and will be removed together. **No** system-level files,
+services, or global packages are left behind.
 
-可选额外清理:
+Optional extra cleanup:
 
-- 不再用任何 LLM 项目 → 登录你 API key 所属 provider 的 console 撤销 key(防泄漏被刷费)
-- 不再用任何 uv 项目 → `uv cache clean` 或 `rm -rf ~/.cache/uv`
+- Done with all LLM projects → log in to your API key provider's console
+  and revoke the key (prevents leaked-key abuse charges).
+- Done with all uv projects → `uv cache clean` or `rm -rf ~/.cache/uv`.
 
 ---
 
@@ -249,7 +282,8 @@ Remove-Item -Recurse -Force self_study_system
 
 ---
 
-## 致谢
+## Acknowledgements
 
-参考过的工作:
-- [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) — LangGraph harness 设计参考
+Inspiration and references:
+- [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent)
+  — reference for LangGraph harness design.
