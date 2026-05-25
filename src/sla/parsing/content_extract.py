@@ -1,14 +1,21 @@
-"""S4 human-anchored 内容抽取(视觉路径):人选章节内容页 → 渲染 PNG →
-单发视觉 LLM 出【纯文本正文】→ 既有 chunker.split_into_chunks → 写 Chunk。
-镜像 S2 的 structure_extract 单发模式,但出文本非结构化(model.invoke
-取 .content),复用 render_pages_to_b64。
+"""S4 human-anchored content extraction (vision path).
 
-载荷:GenerationJob.chapter_id 字段承载 "ch1.2|p=50-65[!force]";路由建,
-run_generation parse,本模块用解出来的 (ch_real, pages, force)。
-/chapters route 的 active dict 用 _ch_base 剥离 |p= 后缀回真章。
+User picks the content pages of a section -> render to PNG -> single
+vision-LLM call returns plain body text -> existing
+chunker.split_into_chunks -> write Chunk.
 
-承重:Chunk.chapter_id 原样写入(等于 document_structure.chapter_id),
-绝不在此环节做任何派生/转换(派生只在 S2 的 derive_chapter_id 一处)。
+Mirrors the single-shot pattern of S2 structure_extract but the output
+is unstructured text (model.invoke().content), reusing render_pages_to_b64.
+
+Payload format: GenerationJob.chapter_id carries
+"ch1.2|p=50-65[!force]". Built by the route, parsed by
+run_generation, this module operates on the parsed
+(ch_real, pages, force) triple. The /chapters route's active dict
+uses _ch_base to strip the |p= suffix back to the real chapter.
+
+Load-bearing rule: Chunk.chapter_id is written as-is (equal to
+document_structure.chapter_id). NEVER derive or transform it here —
+derivation only happens once, in S2 derive_chapter_id.
 """
 import re
 
@@ -27,8 +34,10 @@ from sla.parsing.structure_extract import render_pages_to_b64
 
 _PAYLOAD_RE = re.compile(r"^(ch\d+(?:\.\d+)*)\|p=(.+?)(!force)?$")
 
-# safety_settings 全 BLOCK_NONE:产品意图是 OCR 自己合法教材,不接受任何
-# 误判截断。Gemini 这点 vs Anthropic 黑盒不可调是结构优势。
+# safety_settings = BLOCK_NONE everywhere: the product intent is to OCR
+# the user's own legitimate textbook, so we don't accept false-positive
+# truncation. Being able to set this explicitly (vs Anthropic's opaque
+# filter) is a structural advantage of Gemini for this task.
 _GEMINI_SAFETY_NONE = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -38,8 +47,10 @@ _GEMINI_SAFETY_NONE = {
 
 
 def parse_content_payload(payload: str) -> tuple[str, list[int], bool]:
-    """'ch1.2|p=50-65[!force]' / 'ch6.1.1|p=200,202-205'
-    → (chapter_id, sorted unique 1-based PDF 页, force)。非法即 ValueError。"""
+    """Parse 'ch1.2|p=50-65[!force]' / 'ch6.1.1|p=200,202-205' into
+    (chapter_id, sorted unique 1-based PDF pages, force).
+    Raises ValueError on malformed input.
+    """
     s = (payload or "").strip()
     m = _PAYLOAD_RE.match(s)
     if not m:
@@ -74,8 +85,8 @@ def parse_content_payload(payload: str) -> tuple[str, list[int], bool]:
 
 
 def _extract_text_from_result(content) -> str:
-    """ChatAnthropic.invoke 返回的 AIMessage.content 可能是 str 也可能是 list[dict]
-    (取决于版本/响应)。取出全部 text 块拼起来。"""
+    """AIMessage.content from ChatAnthropic.invoke can be either str or
+    list[dict] (depends on version/response). Concatenate all text blocks."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -93,24 +104,35 @@ def extract_and_chunk(
     db, document_id: int, chapter_id: str, pages: list[int], force: bool,
     *, model_name: str = "gemini-2.5-flash", max_tokens: int = 8000,
 ) -> dict:
-    # 默认 gemini-2.5-flash(2026-05-21 ratify,见 memory:vision-ocr-provider-choice):
-    # 完整诊断链:
-    #   - sonnet-4-6/opus-4-7 撞 Anthropic 服务端 content filter(APIStatusError
-    #     "Output blocked by content filtering policy",stop_reason=None)
-    #   - haiku-4-5 单页+简 prompt 过,但【多页 或 完整 CONTENT_EXTRACT_SYSTEM】
-    #     任一条件就撞同样的 filter(haiku 不是普适解)
-    #   - gemini-2.5-flash 全场景过:finish_reason=STOP、safety_ratings=[]、
-    #     LaTeX 数学完整($,\hat,\frac,\sum,\sqrt 全在)、中文洁净、节边界过滤
-    #     生效(看到 1.2 标题自动截止)、成本 ~$0.002/节(1/25 sonnet)
-    # 关键:Gemini safety_settings 可显式 BLOCK_NONE,Anthropic 黑盒不可调。
-    """渲染指定 PDF 页 → 单发视觉 LLM(纯文本)→ chunker → 写 Chunk。
-    幂等:已有 Chunk 且 ¬force → 跳过(不渲染不调 LLM,省钱,loud);
-    force → 先删该 (doc, chapter_id) 全部 Chunk 再写。
-    返回 summary dict 供 job.detail。"""
+    # Default model gemini-2.5-flash, ratified 2026-05-21
+    # (see memory: vision-ocr-provider-choice). Full diagnostic chain:
+    #   - sonnet-4-6 / opus-4-7 hit Anthropic server-side content filter
+    #     (APIStatusError "Output blocked by content filtering policy",
+    #     stop_reason=None)
+    #   - haiku-4-5 passes with a single page + minimal prompt, but hits
+    #     the same filter as soon as we add either multi-page input or
+    #     the full CONTENT_EXTRACT_SYSTEM — not a general fix
+    #   - gemini-2.5-flash passes in every scenario:
+    #     finish_reason=STOP, safety_ratings=[], LaTeX math preserved
+    #     ($, \hat, \frac, \sum, \sqrt), clean Chinese output,
+    #     section-boundary filtering works (stops at next "1.2" header),
+    #     cost ~$0.002/section (1/25 of sonnet).
+    # Key advantage: Gemini's safety_settings can be set to BLOCK_NONE
+    # explicitly; Anthropic's filter is opaque and not user-configurable.
+    """Render the given PDF pages -> single vision-LLM call (plain text)
+    -> chunker -> write Chunk rows.
+
+    Idempotency: if Chunks already exist and not force -> skip (no render,
+    no LLM call, loud return). With force -> delete all existing
+    (document_id, chapter_id) Chunks before writing.
+
+    Returns a summary dict for job.detail.
+    """
     doc = db.get(Document, document_id)
     if doc is None or not doc.file_path:
         raise ValueError(f"document {document_id} 不存在或无 file_path")
-    # 校验:该 doc 真有此 chapter_id 的 document_structure 行(防 S3 漏校验)
+    # Verify the document has a document_structure row for this chapter_id
+    # (defense against S3 missing a check).
     has_struct = (
         db.query(DocumentStructure)
         .filter(DocumentStructure.document_id == document_id,
@@ -133,8 +155,9 @@ def extract_and_chunk(
 
     images_b64 = render_pages_to_b64(doc.file_path, pages)
 
-    # Gemini 图像 content 用 image_url(data URL)形;Anthropic 用 source_type=base64;
-    # langchain 抽象层对各 provider 自动适配,我们按目标 provider 用其惯例形即可。
+    # Gemini wants image content as image_url (data URL); Anthropic wants
+    # source_type=base64. The LangChain abstraction adapts to each provider,
+    # so we just use the conventional form for the target provider.
     content: list = [{
         "type": "text",
         "text": (f"以下是该教材【{chapter_id}】的内容页图像(共 {len(pages)} 页,"
@@ -154,8 +177,9 @@ def extract_and_chunk(
         temperature=0,
         safety_settings=_GEMINI_SAFETY_NONE,
     )
-    # SystemMessage plain text(per [[provider-portability-preference]]:
-    # 不深耕 Anthropic-native multi-block cache_control;Gemini 不支持该形)。
+    # Plain-text SystemMessage (per provider-portability-preference: avoid
+    # going deeper into Anthropic-native multi-block cache_control, which
+    # Gemini does not support).
     result = model.invoke([
         SystemMessage(content=CONTENT_EXTRACT_SYSTEM),
         HumanMessage(content=content),

@@ -1,12 +1,12 @@
-"""章节检测 —— Phase 2-W1-3.
+"""Chapter detection -- Phase 2-W1-3.
 
-策略(no embedded TOC 时):
-  1. 扫前 15 页找 TOC 页(含 'Contents' header 或 section_id 密集)
-  2. 解析 TOC text 抽 section_id + title + book_page
-  3. 找 'Chapter N' 在 PDF 哪页 → 算 pdf_offset
-  4. 算每个 section 的 PDF 页范围(start = book_page + offset, end = 下一节 start - 1)
+Strategy (when no embedded TOC):
+  1. Scan first 15 pages for TOC pages (containing 'Contents' header or dense section_id)
+  2. Parse TOC text to extract section_id + title + book_page
+  3. Find which PDF page 'Chapter N' is on -> compute pdf_offset
+  4. Compute PDF page range for each section (start = book_page + offset, end = next section start - 1)
 
-输出 Section 列表,page 字段语义跟 fixture 一致(book page,不是 PDF page)。
+Outputs a list of Section; page fields use the same semantics as fixtures (book page, not PDF page).
 """
 import logging
 import re
@@ -17,51 +17,52 @@ from sla.parsing.pdf import Page
 log = logging.getLogger(__name__)
 
 
-# --- section-detection gate 常量(单点定义,防 silent drift;依据 RETROSPECTIVE §29/§30 O1/O2)---
+# --- section-detection gate constants (single-point definition to prevent silent drift; per RETROSPECTIVE §29/§30 O1/O2) ---
 
-# D′ workhorse:对 raw toc_text 的【独立宽松】节号扫描。与 parse_toc_text 的关键区别 = 锚定方式:
-#   parse_toc_text:逐行 re.fullmatch(r"\d+(?:\.\d+)?", line) —— 要求【整行只有】节号,
-#                   故 `∗3.5`(星前缀)和 `3.10 Summary`(节号+标题同行)fullmatch 失败 → §29 漏检
-#   D′           :全局 finditer,行首允许【空白/星号前缀】,节号后只需【词边界】 ——
-#                   不要求整行、不要求无星号,starred / inline 两种形态都命中
-# 唯一共享依赖 = extract_toc_text(定位+取 Contents 文本),§29 bug 不在那(在 entry 抽取
-# 的 strict fullmatch),故 D′ 对 §29 bug 类是真正交校验,非"循环自证"。
-# `∗` = U+2217 ASTERISK OPERATOR(教材 advanced-section 标记),非 ASCII `*`;两个都收。
+# D' workhorse: an [independent, loose] section-number scan over raw toc_text. Key difference from parse_toc_text = anchoring:
+#   parse_toc_text: line-by-line re.fullmatch(r"\d+(?:\.\d+)?", line) -- requires the [entire line to be only] a section number,
+#                   so `∗3.5` (star prefix) and `3.10 Summary` (section-id + title on same line) fail fullmatch -> §29 miss
+#   D'            : global finditer, allows [whitespace/star prefix] at line start, only [word boundary] required after the
+#                   section number -- no full-line / no-asterisk requirement; both starred and inline forms hit
+# The only shared dependency = extract_toc_text (locate + fetch Contents text); the §29 bug is not there (it's in the entry
+# extraction's strict fullmatch), so D' is a true cross-check against the §29 bug class, not "circular self-validation".
+# `∗` = U+2217 ASTERISK OPERATOR (textbook advanced-section marker), not ASCII `*`; we accept both.
 _SECTION_TOKEN_RE = re.compile(r"(?m)^[ \t∗*]*(\d+)\.(\d+)\b")
 
-# B1 跨度离群:§29 实测对真实污染失效(ch3.9 吞 3.10 仅 2.5×中位、ch3.4 吞 3.5 仅 1.5×,
-# 均 < 3;小样本+多节污染时污染节自抬中位 → 自我失效)。**WARN-only 软提示,勿再升承重位。**
+# B1 span outlier: §29 empirically fails on real contamination (ch3.9 swallowing 3.10 was only 2.5x median, ch3.4 swallowing
+# 3.5 only 1.5x, both < 3; under small samples + multi-section contamination, the polluted section inflates the median ->
+# self-defeats). **WARN-only soft hint, do NOT promote back to a load-bearing gate.**
 TRAILING_SPAN_FACTOR = 3
 MIN_SECS_FOR_SPAN_STAT = 4
 
-# B2 末节标题:本书 ch1 末节是 "Bibliographical Remarks" 非 Summary(实证 TOC),
-# 故 TERMINAL 是【集合】;且本书该信号只能 WARN(见 GATE_STRICT_TERMINAL)。
+# B2 terminal-section title: in this textbook, ch1's terminal section is "Bibliographical Remarks", not Summary (empirical
+# TOC), so TERMINAL is a [set]; and for this book the signal can only be WARN (see GATE_STRICT_TERMINAL).
 TERMINAL_TITLE_RE = re.compile(r"^(summary|conclusion|bibliographical)\b", re.I)
 GATE_STRICT_TERMINAL = False
 
 
 class SectionDetectionError(ValueError):
-    """章节检测 gate 硬违规。ingest 阶段早停用,不是 graph 异常。"""
+    """Hard violation from the chapter-detection gate. Used to early-stop the ingest phase, not a graph exception."""
 
 
 @dataclass
 class Section:
-    """单节(1.3 / 2.1 等)的检测结果。"""
-    chapter_id: str          # 'ch1.3'(给 DB Chunk.chapter_id 用,前缀 'ch')
-    section_id: str          # '1.3'(原始 TOC 编号)
+    """Detection result for a single section (e.g. 1.3 / 2.1)."""
+    chapter_id: str          # 'ch1.3' (used for DB Chunk.chapter_id, prefixed with 'ch')
+    section_id: str          # '1.3' (raw TOC numbering)
     title: str               # 'Elements of Reinforcement Learning'
-    book_page_start: int     # 节起始书页(TOC 给的页码)
-    book_page_end: int       # 下一节起始 - 1
+    book_page_start: int     # Section's starting book page (page number given by TOC)
+    book_page_end: int       # Next section start - 1
     pdf_page_start: int      # book_page_start + pdf_offset
     pdf_page_end: int        # book_page_end + pdf_offset
 
 
 # --------------------------------------------------------------------------- #
-# 子步骤
+# Sub-steps
 # --------------------------------------------------------------------------- #
 
 def find_toc_pages(pages: list[Page], max_scan: int = 15) -> list[int]:
-    """找 PDF 里的 TOC 页(1-based pdf_page 列表)。"""
+    """Find TOC pages in the PDF (list of 1-based pdf_page values)."""
     indices: list[int] = []
     started = False
     for p in pages[:max_scan]:
@@ -71,7 +72,7 @@ def find_toc_pages(pages: list[Page], max_scan: int = 15) -> list[int]:
             indices.append(p.pdf_page)
             started = True
         elif started:
-            # 已进入 TOC,后续 section_id 密集 → TOC 续页;否则 TOC 结束
+            # Already inside TOC; if section_ids stay dense -> TOC continuation page; otherwise TOC has ended
             if section_count >= 3:
                 indices.append(p.pdf_page)
             else:
@@ -80,33 +81,33 @@ def find_toc_pages(pages: list[Page], max_scan: int = 15) -> list[int]:
 
 
 def parse_toc_text(toc_text: str) -> list[dict]:
-    """从 TOC 文本提取条目列表。
+    """Extract entry list from TOC text.
 
-    TOC 条目在文本里跨多行,典型形态:
-        section_id (e.g. '1.3' 或 '1' for chapter heading)
+    TOC entries span multiple lines in the text; typical shape:
+        section_id (e.g. '1.3' or '1' for chapter heading)
         title (e.g. 'Elements of Reinforcement Learning')
-        dot leader(可能,e.g. '. . . . .')
+        dot leader (optional, e.g. '. . . . .')
         page number (e.g. '7')
 
-    解析规则:
-      - 锚点:行(去前导 ∗/* 后)以 \\d+(\\.\\d+)? 开头
-        · 纯 section_id 一行(常态,如 '3.1')
-        · 带前导星号(教材标记 advanced/可跳过节,如 '∗3.5')
-        · section_id + title 同一行(两位数节号/章号挤同行,如 '3.10 Summary'
-          '11.1 Actor–Critic Methods')
-      - 锚点后累积 title 行,直到遇到:纯数字(=page),或下一个 section_id
-      - 纯 page 必须 < 1000(防止误吞下章标题数字)
-      - title 行去尾点
-      - Roman numeral 行(前 matter)中断
+    Parsing rules:
+      - Anchor: line (after stripping leading ∗/*) starts with \\d+(\\.\\d+)?
+        - Pure section_id on its own line (the norm, e.g. '3.1')
+        - With leading asterisk (textbook marker for advanced/skippable sections, e.g. '∗3.5')
+        - section_id + title on the same line (two-digit section/chapter numbers crammed together,
+          e.g. '3.10 Summary', '11.1 Actor-Critic Methods')
+      - After the anchor, accumulate title lines until we hit: a bare number (= page), or the next section_id
+      - Bare page must be < 1000 (prevents accidentally swallowing the next chapter's title number)
+      - Strip trailing dots from title lines
+      - Roman numeral lines (front matter) terminate the entry
 
-    返回 [{section_id, title, book_page}] (chapter 自身和子节都返回)。
+    Returns [{section_id, title, book_page}] (returns both the chapter itself and its subsections).
     """
     lines = toc_text.split("\n")
     entries: list[dict] = []
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        # 去前导星号:教材用 ∗(U+2217)或 * 标记 advanced section(∗3.5 / ∗5.8)
+        # Strip leading asterisks: textbook uses ∗ (U+2217) or * to mark advanced sections (∗3.5 / ∗5.8)
         stripped = re.sub(r"^[∗*]+\s*", "", line)
         anchor = re.match(r"^(\d+(?:\.\d+)?)(?:\s+(\S.*))?$", stripped)
         if not anchor:
@@ -117,8 +118,8 @@ def parse_toc_text(toc_text: str) -> list[dict]:
 
         title_parts: list[str] = []
         page_num: int | None = None
-        # section_id + title 挤同行:仅对子节(含点)接受 inline title,
-        # 避免把纯 page 行 '53' 或 chapter 行误判
+        # section_id + title crammed onto same line: only accept inline title for subsections (those with a dot),
+        # to avoid misreading a bare-page line '53' or a chapter line
         if inline_rest and "." in section_id:
             cleaned = re.sub(r"[\s.]+$", "", inline_rest).strip()
             if cleaned and not re.fullmatch(r"\d+", cleaned):
@@ -129,24 +130,24 @@ def parse_toc_text(toc_text: str) -> list[dict]:
             if not cand:
                 j += 1
                 continue
-            # 下一个子节锚点(去星号 + 兼容 inline title);含点 = 必然子节
+            # Next subsection anchor (strip asterisk + tolerate inline title); presence of a dot = definitely a subsection
             cand_stripped = re.sub(r"^[∗*]+\s*", "", cand)
             if re.match(r"^\d+\.\d+(?:\s+\S.*)?$", cand_stripped):
-                break          # 下一个子节,这条结束(没读到 page,放弃)
-            # 纯整数:可能是下一个 chapter id 或当前节的 page
+                break          # Next subsection encountered; this entry ends (no page read, give up)
+            # Bare integer: could be the next chapter id, or the current section's page
             if re.fullmatch(r"\d+", cand):
                 if title_parts and int(cand) < 1000:
                     page_num = int(cand)
                     j += 1
-                break              # 无 title 碰到下一 chapter id 也在此放弃
-            # 罗马数字(前 matter 的 page) → 这条不计入
+                break              # If no title and we hit the next chapter id, also give up here
+            # Roman numeral (front matter page) -> do not record this entry
             if re.fullmatch(r"[ivxlcdm]+", cand.lower()) and len(cand) < 6:
                 break
-            # 纯 dot leader
+            # Pure dot leader
             if re.fullmatch(r"[\s.]+", cand):
                 j += 1
                 continue
-            # 否则是 title 一部分,去尾部 dots
+            # Otherwise it's part of the title; strip trailing dots
             cleaned = re.sub(r"[\s.]+$", "", cand).strip()
             if cleaned:
                 title_parts.append(cleaned)
@@ -164,44 +165,44 @@ def parse_toc_text(toc_text: str) -> list[dict]:
 
 
 def find_first_chapter_pdf_page(pages: list[Page], chapter_num: int = 1) -> int | None:
-    """在 PDF 正文里找 'Chapter N' 标题,返回 PDF 页号。"""
+    """Find the 'Chapter N' heading in the PDF body and return its PDF page number."""
     pattern = re.compile(rf"^Chapter\s+{chapter_num}\s*$", re.MULTILINE)
     for p in pages:
-        # 标题应该在页首 ~200 字符内,避免 match 引用提及
+        # The heading should be within the first ~200 chars of the page, to avoid matching reference mentions
         if pattern.search(p.text[:200]):
             return p.pdf_page
     return None
 
 
 # --------------------------------------------------------------------------- #
-# 主入口
+# Main entry point
 # --------------------------------------------------------------------------- #
 
 def detect_sections(
     pages: list[Page],
     chapter_filter: str | None = None,
 ) -> list[Section]:
-    """主入口:返回 Section 列表(只含子节,不含 chapter 标题自身)。
+    """Main entry: returns a list of Section (subsections only, excluding the chapter heading itself).
 
-    chapter_filter: 形如 '1',只返回 ch1.x;None 返回全部。
+    chapter_filter: e.g. '1' returns only ch1.x; None returns all.
     """
-    # 与 recover_toc_section_ids(D′)共用唯一一份 toc_text(#2:保证逐字节同输入)。
-    # not toc_text.strip() 是原 `not toc_page_ids` 的 superset(也覆盖"页在但文本空")。
+    # Shares the single toc_text with recover_toc_section_ids (D') (#2: guarantees byte-for-byte identical input).
+    # `not toc_text.strip()` is a superset of the original `not toc_page_ids` (also covers "pages present but text empty").
     toc_text = extract_toc_text(pages)
     if not toc_text.strip():
         raise ValueError("no TOC pages found")
 
     raw_entries = parse_toc_text(toc_text)
     if not raw_entries:
-        raise ValueError("no TOC entries parsed")   # 第二道 guard,保留:页在文本在但抽不出条目
+        raise ValueError("no TOC entries parsed")   # Second guard, kept: pages and text are present but no entries extractable
 
-    # 算 pdf_offset:Chapter 1 在 PDF 哪页 → offset = pdf - 1 (因为 ch1 总是 book page 1)
+    # Compute pdf_offset: which PDF page is Chapter 1 on -> offset = pdf - 1 (since ch1 is always book page 1)
     ch1_pdf = find_first_chapter_pdf_page(pages, 1)
     if ch1_pdf is None:
         raise ValueError("can't find 'Chapter 1' header in PDF body")
     pdf_offset = ch1_pdf - 1
 
-    # 过滤出子节(含点的 section_id)
+    # Filter to subsections (section_id containing a dot)
     sub_entries = [e for e in raw_entries if "." in e["section_id"]]
     if chapter_filter is not None:
         sub_entries = [
@@ -211,8 +212,8 @@ def detect_sections(
 
     sections: list[Section] = []
     for idx, e in enumerate(sub_entries):
-        # end page:下一节(按全局顺序)起始 - 1。需要从原始 raw_entries 里找下一个
-        # 任意 section/chapter 锚点(不能只看 sub_entries,否则跨 chapter 时算错)
+        # end page: next section's start (in global order) - 1. Must look up the next any-section/chapter anchor in the
+        # raw_entries list (cannot only look at sub_entries, otherwise cross-chapter boundaries miscompute)
         global_idx = raw_entries.index(e)
         if global_idx + 1 < len(raw_entries):
             next_book_page = raw_entries[global_idx + 1]["book_page"]
@@ -233,27 +234,30 @@ def detect_sections(
 
 
 # --------------------------------------------------------------------------- #
-# section-detection gate(O1/O2:确定性闸门,非 graph node 非 hook)
+# section-detection gate (O1/O2: deterministic gate, not a graph node, not a hook)
 # --------------------------------------------------------------------------- #
 
 def extract_toc_text(pages: list[Page]) -> str:
-    """Contents 区原始文本。detect_sections 与 recover_toc_section_ids 共用【唯一】一份,
-    保证 D′ 校验的输入与 parse_toc_text 消费的逐字节相同——否则交叉校验静默失效(#2)。
+    """Raw text of the Contents region. detect_sections and recover_toc_section_ids share this [single] copy,
+    guaranteeing D''s validation input is byte-identical to what parse_toc_text consumes -- otherwise the cross-check
+    silently breaks (#2).
 
-    D′ soundness 依赖 find_toc_pages 为 pages 的纯确定函数(同输入→同输出),
-    故两调用点 toc_text 必逐字节同;谁将来给 find_toc_pages 加状态,这条不变量即断。
+    D' soundness depends on find_toc_pages being a pure deterministic function of pages (same input -> same output),
+    so the toc_text at both call sites must be byte-identical; whoever later adds state to find_toc_pages will break
+    this invariant.
     """
     toc_page_ids = find_toc_pages(pages)
     return "\n".join(p.text for p in pages if p.pdf_page in toc_page_ids)
 
 
 def recover_toc_section_ids(pages: list[Page]) -> set[tuple[int, int]] | None:
-    """D′:独立宽松正则复原节号集合,作 parse_toc_text 的正交校验。
+    """D': recover the section-number set via an independent loose regex, used as orthogonal validation of parse_toc_text.
 
-    返回 None = TOC 文本为空,D′ 不可用 —— 调用方须【跳过 D′】,不得把空集当成
-    "所有节都缺"→灾难性误报(#2 镜像)。
-    FP/FN 面仅在 SuttonBarto 本书 toc_text 实测过(全书 80 节 0/0);
-    结构不同的 PDF 需重验(归 §30 O9 同类)。独立性论证见 _SECTION_TOKEN_RE 注释。
+    Returns None = TOC text is empty, D' is unavailable -- caller MUST [skip D'], must not treat the empty set as
+    "all sections missing" -> catastrophic false alarm (#2 mirror).
+    The FP/FN surface has only been empirically validated on the SuttonBarto book's toc_text (full 80-section book, 0/0);
+    PDFs with different structure need re-validation (same class as §30 O9). Independence argument is in the
+    _SECTION_TOKEN_RE comment.
     """
     toc_text = extract_toc_text(pages)
     if not toc_text.strip():
@@ -270,13 +274,13 @@ def validate_sections(
     *,
     strict_terminal: bool = GATE_STRICT_TERMINAL,
 ) -> None:
-    """A + D′ 为 FAIL 双主力,B1 仅 WARN,B2 本书 WARN。任一 FAIL → raise。
+    """A + D' are the FAIL workhorses, B1 is WARN-only, B2 is WARN for this book. Any FAIL -> raise.
 
-    A:编号连续性,稳覆盖 interior 漏(3.5:3.4→3.6 跳号)。
-    D′:独立宽松 TOC 复原,覆盖 interior + trailing 漏(3.10:A 盲区)。
+    A: numbering continuity, reliably catches interior misses (3.5: 3.4 -> 3.6 gap).
+    D': independent loose TOC recovery, covers interior + trailing misses (3.10: A's blind spot).
     """
     violations: list[tuple[str, str, str]] = []
-    toc_ids_all = recover_toc_section_ids(pages)      # #3:循环外算一次
+    toc_ids_all = recover_toc_section_ids(pages)      # #3: compute once outside the loop
     if toc_ids_all is None:
         log.warning("[section-gate] D′ 跳过:TOC 文本为空,本次无 D′ 交叉校验")
 
@@ -293,7 +297,7 @@ def validate_sections(
             violations.append(("FAIL", "A.gap",
                 f"ch{major}: 缺 " + ", ".join(f"{major}.{m}" for m in gap)))
 
-        if toc_ids_all is not None:                   # #3:None 则整体跳过 D′
+        if toc_ids_all is not None:                   # #3: if None, skip D' entirely
             toc_minors = {b for (a, b) in toc_ids_all if a == major}
             miss = sorted(toc_minors - set(minors))
             if miss:
@@ -301,7 +305,8 @@ def validate_sections(
                     f"ch{major}: 独立 TOC 扫描见 "
                     f"{major}.{{{','.join(map(str, miss))}}} 但未产出(§29 同症)"))
 
-        # B1 WARN-only:§29 实测 ch3.9 吞3.10=2.5×中位、ch3.4 吞3.5=1.5×,均<3 故失效,仅参考
+        # B1 WARN-only: §29 empirically ch3.9 swallowing 3.10 = 2.5x median, ch3.4 swallowing 3.5 = 1.5x, both < 3, so it
+        # self-defeats; reference only
         spans = [s.pdf_page_end - s.pdf_page_start + 1 for s in secs]
         if len(secs) >= MIN_SECS_FOR_SPAN_STAT:
             med = sorted(spans)[len(spans) // 2]

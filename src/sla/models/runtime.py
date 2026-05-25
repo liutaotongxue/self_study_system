@@ -1,4 +1,4 @@
-"""Harness 运行时 ORM 模型。"""
+"""Harness runtime ORM models."""
 import os
 import sys
 from datetime import datetime
@@ -109,7 +109,11 @@ class EvalResult(Base):
 
 
 class GenerationJob(Base):
-    """P3b:UI 触发的章节 生成/重建 任务。状态机 + reconcile(pid+timeout 双信号)。"""
+    """A UI-triggered per-chapter generation/rebuild job.
+
+    State machine + reconcile loop (uses pid + timeout as two independent
+    signals).
+    """
 
     __tablename__ = "generation_job"
 
@@ -119,26 +123,40 @@ class GenerationJob(Base):
     mode: Mapped[str] = mapped_column(String(16))                       # generate | rebuild
     status: Mapped[str] = mapped_column(String(16), default="queued")   # queued|running|done|failed
     step: Mapped[str | None] = mapped_column(String(16), default=None)  # study_book|build_kg|backfill
-    pid: Mapped[int | None] = mapped_column(default=None)               # runner OS pid(POSIX liveness)
-    detail: Mapped[str | None] = mapped_column(Text, default=None)      # 失败/gate-stop 原文
+    pid: Mapped[int | None] = mapped_column(default=None)               # runner OS pid (POSIX liveness)
+    detail: Mapped[str | None] = mapped_column(Text, default=None)      # Failure / gate-stop message
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(default=None)
 
 
-# deadlock-floor,非 SLA:设到【合法 generate 撞不到】的高位 —— reconcile 标 failed
-# 不杀进程,若 false-timeout 活 job→锁释放→并发双 generate→双花+study_book累加
-# (击穿三态)。依据:false-kill-live-job ≫ 坏于 慢恢复-dead-job;真 generate 耗时
-# 测法故意跳 study_book 未实测,故取高位余量而非估测 SLA(no-fabricated-numbers)。
+# Deadlock floor, not an SLA: pick a value that no legal generation run will
+# hit. If reconcile marks failed without killing the process and a false
+# timeout fires on a live job, the lock would release -> concurrent
+# generations could double-spend and accumulate Notes (breaking the three
+# semantic states). False-kill-of-live-job is much worse than slow-recover-
+# of-dead-job. The real generation cost was never measured (study_book was
+# skipped in those experiments), so we pick a generous high value rather
+# than estimating an SLA — see no-fabricated-numbers principle.
 GENERATION_MAX_MINUTES = 90
 
 
 def reconcile_generation_jobs(db):
-    """惰性 on-read(无后台调度,单用户最小化)。两【独立】信号,各自能单独判死:
-      - pid 死(仅 POSIX):os.kill(pid,0) ProcessLookupError
-      - 超时:running 超 MAX(独立兜底 pid-reuse;且为 Windows 唯一信号)
-    标 failed【不杀进程】(杀 mid-LLM-write 有腐败风险;floor 设高位规避 false-kill)。
-    Windows guard:os.kill(pid,0) 在 Win = TerminateProcess(杀!)非探测 → 跳过,
-    降级 timeout-only(90min floor 跨平台仍清死锁)。Windows-native probe = O9 named-defer。"""
+    """Lazy on-read reconciler (no background scheduler — minimal single-user).
+
+    Two INDEPENDENT signals, each sufficient on its own to declare a job dead:
+      - pid death (POSIX only): os.kill(pid, 0) raises ProcessLookupError.
+      - timeout: running for longer than MAX (also our pid-reuse backstop;
+        the only signal available on Windows).
+
+    Flagged failed WITHOUT killing the process (killing mid-LLM-write risks
+    data corruption; the floor is set high specifically to avoid false-kill).
+
+    Windows guard: os.kill(pid, 0) on Windows is implemented as
+    TerminateProcess (it actually kills the process!), not a probe — so we
+    skip the pid check there and rely on timeout only. The 90-minute floor
+    still clears stuck locks cross-platform. Windows-native probe is
+    backlogged (O9).
+    """
     now = datetime.utcnow()
     changed = False
     for j in db.query(GenerationJob).filter(GenerationJob.status == "running").all():

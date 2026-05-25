@@ -1,24 +1,24 @@
-"""1c:agent 外确定性结构 gate(纯函数;无 DB、无网络、无 LLM)。
+"""1c: deterministic structure gate outside the agent (pure function; no DB, no network, no LLM).
 
-独立性命脉:本模块只吃 (pages, proposed)。pages = 1c 自己 extract_pages
-重扫的正文(【不】吃 agent 的 probe_body 输出);proposed = 逐字读自
-ToolCall.input。校验信号 _SECTION_TOKEN_RE(regex-on-body)与抽取
-(agent-on-TOC)永不同源 → 非 green-by-construction。
+Independence lifeline: this module consumes only (pages, proposed). pages = body re-scanned by 1c's own extract_pages
+([NOT] the agent's probe_body output); proposed = read byte-for-byte from ToolCall.input. The validation signal
+_SECTION_TOKEN_RE (regex-on-body) and the extraction (agent-on-TOC) never share a source -> not green-by-construction.
 
-层 A 硬门 = well-formedness。明确标注:这是 green-by-construction —— 只
-抓"提议自相矛盾",不证"结构正确",必要非充分(见记忆
-chapter_detect-page-invariants-are-circular)。
-层 B = 唯一真·独立信号,双向:
-  B-1 提议⊆正文(每提议节 token 在其声称 pdf 页±tol 出现)→ 命中率;
-  B-2 正文独立正扫 S_body,提议⊇S_body → §29 守卫【本体】(抓漏节)。
-层 C offset 恒定 = WARN-only(B1-否决:此族 §29 真实污染失效,
-  chapter_detect:31-33"勿再升承重位";升硬门须 S&B+§29 实测零误 fire)。
+Layer A hard gate = well-formedness. Explicitly noted: this is green-by-construction -- it only catches "proposal
+self-contradictions", does not prove "structure is correct"; necessary not sufficient (see memory
+chapter_detect-page-invariants-are-circular).
+Layer B = the only truly independent signal, bidirectional:
+  B-1 proposal subset-of body (each proposed section's token appears within ±tol of its claimed pdf page) -> hit rate;
+  B-2 independent forward scan of body S_body, proposal superset-of S_body -> §29 guard [proper] (catches missed sections).
+Layer C constant offset = WARN-only (B1-veto: this family self-defeated on real §29 contamination,
+  chapter_detect:31-33 "do not promote back to a load-bearing gate"; promotion requires S&B + §29 empirical zero false-fire).
 
-无任何硬等值 / 写死计数:全报数,B/C 阈值与 tol 由真数据后定(fork①④)。
+No hard equalities / hardcoded counts: everything is reported numerically; B/C thresholds and tol are set later from
+real data (fork (1)(4)).
 """
 import re
 
-# 复用仓库已验的独立 token 匹配器(用户硬约束:不另写 regex)
+# Reuse the repo's already-validated independent token matcher (user hard constraint: do not write another regex)
 from sla.parsing.chapter_detect import _SECTION_TOKEN_RE  # noqa: PLC2701
 from sla.parsing.pdf import Page
 
@@ -30,7 +30,7 @@ _SEVEN = (
 
 
 def _skey(sid: str):
-    """两级 'a.b' → [a,b] 排序键;非两级 → 巨值沉底(不崩)。"""
+    """Two-level 'a.b' -> [a,b] sort key; non-two-level -> huge value sinks to bottom (no crash)."""
     if _TWO_LEVEL.match(sid):
         return [int(t) for t in sid.split(".")]
     return [10 ** 9]
@@ -42,12 +42,12 @@ class GateReport:
 
     @property
     def hard_pass(self) -> bool:
-        # v1:仅层 A 是硬门。B/C 为测量+WARN(阈值未由真数据定 → 不 gate,fork①)。
+        # v1: only Layer A is a hard gate. B/C are measurement + WARN (thresholds not yet set from real data -> no gating, fork (1)).
         return not self.layer_a_violations
 
 
 def _body_scan(pages: list[Page]) -> dict:
-    """独立正扫:_SECTION_TOKEN_RE 扫全 PDF 行首 → {section_id: [(pdf_page, line)]}"""
+    """Independent forward scan: run _SECTION_TOKEN_RE across all PDF line starts -> {section_id: [(pdf_page, line)]}"""
     found: dict = {}
     for p in pages:
         for m in _SECTION_TOKEN_RE.finditer(p.text):
@@ -60,7 +60,7 @@ def _body_scan(pages: list[Page]) -> dict:
 def verify_structure_proposal(pages, proposed, pdf_tol: int = 1) -> GateReport:
     proposed = proposed or []
 
-    # ---- 层 A 硬门(green-by-construction:必要非充分) ----
+    # ---- Layer A hard gate (green-by-construction: necessary not sufficient) ----
     viol = []
     for i, s in enumerate(proposed):
         if not isinstance(s, dict):
@@ -84,15 +84,15 @@ def verify_structure_proposal(pages, proposed, pdf_tol: int = 1) -> GateReport:
         if not (1 <= bs <= be) or not (1 <= ps <= pe):
             viol.append((sid, f"页序非法 book[{bs},{be}] pdf[{ps},{pe}]"))
 
-    # ---- 层 B-2 独立正扫(§29 守卫本体) ----
+    # ---- Layer B-2 independent forward scan (§29 guard proper) ----
     body = _body_scan(pages)
     s_body = sorted(body.keys(), key=_skey)
     prop_ids = {str(s.get("section_id")) for s in proposed if isinstance(s, dict)}
-    missing = [sid for sid in s_body if sid not in prop_ids]   # 含噪 → 人工查
+    missing = [sid for sid in s_body if sid not in prop_ids]   # Contains noise -> human review
     extra = sorted(prop_ids - set(s_body), key=_skey)
     samples = [(sid, body[sid][0][0], body[sid][0][1]) for sid in s_body[:25]]
 
-    # ---- 层 B-1 提议⊆正文 命中(声称 pdf 页 ±tol) ----
+    # ---- Layer B-1 proposal subset-of body hit (claimed pdf page ±tol) ----
     by_page: dict = {}
     for p in pages:
         for m in _SECTION_TOKEN_RE.finditer(p.text):
@@ -114,7 +114,7 @@ def verify_structure_proposal(pages, proposed, pdf_tol: int = 1) -> GateReport:
         else:
             b1_misses.append((sid, claim))
 
-    # ---- 层 C offset(WARN-only,B1-否决) ----
+    # ---- Layer C offset (WARN-only, B1-vetoed) ----
     offsets = {}
     for s in proposed:
         if not isinstance(s, dict):

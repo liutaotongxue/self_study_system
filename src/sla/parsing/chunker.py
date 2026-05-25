@@ -1,12 +1,12 @@
-"""文本切块 —— Phase 2-W1-4.
+"""Text chunking.
 
-输入:section 的 joined text(从 pdf.py 的 join_pages_text 来)
-输出:list[str] 切好的 chunk 文本
+Input:  joined section text (from pdf.py join_pages_text).
+Output: list[str] of chunked text.
 
-Phase 2-W1 简化:
-  - 不做 per-chunk page tracking(每个 chunk 共用 section 的 page 范围)
-  - 只做最小文本清洗(ligature 归一化 + 处理排版断词)
-  - 其他噪声(页眉/页脚/脚注)留给 Phase 2 后续
+Simplifying assumptions:
+  - No per-chunk page tracking (every chunk shares the section's page range).
+  - Minimal text cleanup only (ligature normalization + line-break dehyphenation).
+  - Other noise (headers/footers/footnotes) is left for later stages.
 """
 import re
 
@@ -17,7 +17,7 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
 
-# LaTeX 排版常见 ligature 字符 → ASCII
+# Common LaTeX ligature characters -> ASCII equivalents.
 LIGATURE_MAP = {
     "ﬁ": "fi",
     "ﬂ": "fl",
@@ -30,10 +30,11 @@ LIGATURE_MAP = {
 
 
 def normalize_text(text: str) -> str:
-    """Phase 2-W1 最小清洗:
-      1. 替换 ligature 字符
-      2. 合并因排版断行的连字符词(e.g. 'environ-\\nment' → 'environment')
-         只处理小写字母对,避免误伤 'U.S.-China' 这种合法连字符
+    """Minimal cleanup:
+      1. Replace ligature characters.
+      2. Re-join words broken by typographic line-breaks
+         (e.g. 'environ-\\nment' -> 'environment'). Only matches lowercase
+         pairs so legitimate hyphens like 'U.S.-China' are preserved.
     """
     for old, new in LIGATURE_MAP.items():
         text = text.replace(old, new)
@@ -46,9 +47,9 @@ def split_into_chunks(
     chunk_size: int = CHUNK_SIZE,
     chunk_overlap: int = CHUNK_OVERLAP,
 ) -> list[str]:
-    """切块,优先在段落/句子边界处切。
+    """Split text into chunks, preferring paragraph / sentence boundaries.
 
-    返回 list[str]。空 text 或空白 text 返回空列表。
+    Returns list[str]. Empty or whitespace-only text returns an empty list.
     """
     if not text or not text.strip():
         return []

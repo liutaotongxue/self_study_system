@@ -1,17 +1,27 @@
-"""S2 human-anchored 结构抽取(视觉路径):人选目录页 → 渲染为 PNG →
-一发视觉结构化 LLM 调用 → 写 document_structure。【非 agent、不碰
-graph】,with_structured_output(Pydantic).invoke 单发范式,以图像消息
-替代文本(2026-05 路径B探针实测:视觉在 OCR 烂书上显著胜文本层 ——
-doc3 文本层标题半毁→视觉 366 条全洁、页码单增)。
+"""S2 human-anchored structure extraction (vision path).
 
-Provider:S4 OCR 已切 Gemini 2.5-flash;S2 TOC 同样视觉任务,2026-05
-跟随切到 Gemini,fork 用户只填 GOOGLE_API_KEY 即可跑通"上传→标目
-录→标内容"前 4 步,Anthropic key 仅生成笔记 + KG 才需要。
+User picks the TOC pages -> render to PNG -> single
+with_structured_output(Pydantic).invoke vision-LLM call -> write
+document_structure. Not an agent and does not touch the graph harness.
 
-承重:chapter_id = "ch" + section_id 在 Python 确定性派生,不信 LLM
-(S3 状态页 LEFT JOIN 命脉;S4 写 Chunk.chapter_id 必须用【同一派生】)。
-section_id 非点分整数(章标题行/本章概要/习题/参考文献/前言/附录/无
-编号)→ 不可形成稳定 join 键 → 跳过并计数,不硬塞坏键污染脊。
+Vision input beats text-layer input on OCR-degraded scans
+(2026-05 probe: doc3 text layer had half-broken titles whereas the
+vision path produced 366 clean entries with monotonic page numbers).
+
+Provider: S4 OCR already uses Gemini 2.5-flash; S2 TOC is the same
+vision task and switched to Gemini in 2026-05, so fork users only need
+GOOGLE_API_KEY to run the first 4 steps (upload -> mark TOC -> mark
+content -> see chunks). ANTHROPIC_API_KEY is only required for note +
+KG generation.
+
+Load-bearing rule: chapter_id = "ch" + section_id is derived
+deterministically in Python — we never trust the LLM for this (S3
+status page LEFT JOIN spine; S4 writes Chunk.chapter_id with the same
+derivation). A section_id that is not dotted integers (chapter title
+rows / "chapter overview" / exercises / references / preface /
+appendix / unnumbered material) cannot form a stable join key — we
+skip-and-count rather than fabricating a bad key that would pollute
+the spine.
 """
 import base64
 import re
@@ -30,10 +40,12 @@ from sla.harness.prompts import STRUCTURE_EXTRACT_SYSTEM
 from sla.models.domain import Document, DocumentStructure
 
 _SID_RE = re.compile(r"^\d+(\.\d+)*$")
-_RENDER_ZOOM = 1.8           # ≈ 144 DPI;CJK 教材目录够认
+_RENDER_ZOOM = 1.8           # ~144 DPI; readable for CJK TOC pages
 
-# safety_settings BLOCK_NONE:OCR 自己合法教材,不接受任何误判截断
-# (与 content_extract 同策略;两处独立保留 4 行避免跨模块隐式耦合)
+# safety_settings = BLOCK_NONE: OCR is over the user's own legitimate
+# textbook, so we don't accept false-positive truncation. Same policy
+# as content_extract — kept as 4 lines in each module rather than
+# importing across modules, to avoid implicit coupling.
 _GEMINI_SAFETY_NONE = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -43,9 +55,11 @@ _GEMINI_SAFETY_NONE = {
 
 
 class StructureItem(BaseModel):
-    # human-anchored pivot 后,内容页由用户手输(p=50-65),TOC 抽出的页码无人消费
-    # → 删 book_page_start 字段:1) 数据上无 reader 2) JSON 体积小 ~30% → 缓解大书章节
-    # 多导致的 LLM 输出截断(OutputParserException;2026-05 doc 1 计算机组成原理实例)
+    # After the human-anchored pivot, content pages are entered manually
+    # (p=50-65), so the TOC-extracted page numbers have no consumer.
+    # Dropping book_page_start: (1) no reader in the data flow,
+    # (2) JSON payload shrinks ~30% per item, easing LLM output truncation
+    # on large-TOC books (the OutputParserException seen on doc 1 in 2026-05).
     section_id: str = Field(
         description="目录里的原始编号串,如 '1' / '1.3' / '6.1.1';"
                     "几级照抄不规整化;确无编号则空字符串 ''")
@@ -59,8 +73,10 @@ class StructureExtraction(BaseModel):
 
 
 def derive_chapter_id(section_id: str) -> str | None:
-    """承重确定性派生。非点分整数编号 → None(调用方跳过+计数)。
-    与 Chunk.chapter_id / 后端 _ck(routes_domain:216)同形;S4 必须同此。"""
+    """Load-bearing deterministic derivation. Non dotted-integer numbering
+    returns None — the caller should skip-and-count. The resulting format
+    must match Chunk.chapter_id and backend _ck (routes_domain:216), and
+    S4 must use this same derivation."""
     s = (section_id or "").strip()
     if not _SID_RE.match(s):
         return None
@@ -68,8 +84,9 @@ def derive_chapter_id(section_id: str) -> str | None:
 
 
 def parse_toc_payload(payload: str) -> tuple[list[int], bool]:
-    """'toc:7-10' / 'toc:7,8,9' / 'toc:7-10,15'(+尾缀 '!force')
-    → (sorted unique 1-based PDF 页, force)。非法即 ValueError(loud)。"""
+    """Parse 'toc:7-10' / 'toc:7,8,9' / 'toc:7-10,15' (optional trailing
+    '!force') into (sorted unique 1-based PDF pages, force).
+    Raises ValueError on malformed input (loud)."""
     s = (payload or "").strip()
     force = s.endswith("!force")
     if force:
@@ -103,8 +120,9 @@ def parse_toc_payload(payload: str) -> tuple[list[int], bool]:
 
 
 def render_pages_to_b64(file_path: str, pages: list[int]) -> list[str]:
-    """渲染指定 PDF 页(1-based)为 PNG → base64。zoom=1.8 ≈ 144DPI。
-    项目既有 pymupdf 依赖(sla.parsing.pdf 也用它);零新依赖。"""
+    """Render the given 1-based PDF pages to PNG -> base64.
+    zoom=1.8 ~ 144 DPI. Reuses the existing pymupdf dependency
+    (also used by sla.parsing.pdf) — no new dependency."""
     pdf = pymupdf.open(file_path)
     try:
         if max(pages) > pdf.page_count:
@@ -125,10 +143,15 @@ def extract_and_persist(
     db, document_id: int, pages: list[int], force: bool,
     *, model_name: str = "gemini-2.5-flash", max_tokens: int = 32000,
 ) -> dict:
-    """渲染 TOC 页 → 单发视觉结构化 LLM → 写 document_structure。
-    幂等:已有行且 ¬force → 跳过(不渲染不调 LLM,省钱,loud);
-    force → 先删该 doc 全部 document_structure 再写。
-    返回 summary dict 供 job.detail。"""
+    """Render TOC pages -> single structured-output vision-LLM call ->
+    write document_structure rows.
+
+    Idempotency: if rows already exist and not force -> skip (no render,
+    no LLM call, loud). With force -> delete every document_structure row
+    for this document first, then write.
+
+    Returns a summary dict for job.detail.
+    """
     doc = db.get(Document, document_id)
     if doc is None or not doc.file_path:
         raise ValueError(f"document {document_id} 不存在或无 file_path")
@@ -179,7 +202,7 @@ def extract_and_persist(
         if cid is None:
             unkeyed += 1
             continue
-        if cid in seen:                       # uq(doc,chapter_id) 防撞 + loud
+        if cid in seen:                       # UNIQUE(doc, chapter_id) collision guard, loud
             dups += 1
             continue
         seen.add(cid)
@@ -188,7 +211,7 @@ def extract_and_persist(
             section_id=it.section_id.strip(),
             chapter_id=cid,
             title=(it.title or "").strip(),
-            book_page_start=0,    # 字段保留(NOT NULL),恒置 0;无 reader 故无副作用
+            book_page_start=0,    # Field retained (NOT NULL); always 0 — no reader, no side effect
             source="llm",
         ))
         inserted += 1

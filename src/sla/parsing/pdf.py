@@ -1,7 +1,8 @@
-"""PDF 文本抽取 —— Phase 2-W1-2。
+"""PDF text extraction.
 
-只负责"PDF → list[Page]"这一层,不管章节、不管 chunking。
-其他模块在此基础上做章节检测和切块。
+This module is only responsible for "PDF -> list[Page]". It does not
+handle chapter detection or chunking — those live in other modules
+that build on this layer.
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,19 +12,21 @@ import pymupdf
 
 @dataclass
 class Page:
-    """单页 PDF 抽取结果。"""
-    pdf_page: int       # 1-based PDF 物理页号(给 chapter_detect 用)
-    text: str           # 抽取后的原始文本
+    """Result of extracting a single PDF page."""
+    pdf_page: int       # 1-based physical page number (used by chapter_detect)
+    text: str           # Raw extracted text
 
 
 def extract_pages(pdf_path: str | Path) -> list[Page]:
-    """打开 PDF,逐页抽文本。
+    """Open the PDF and extract text page by page.
 
-    返回列表,长度 = PDF 总页数。文本是 pymupdf 默认 get_text() 输出,
-    保留换行。不做清洗(页眉页脚等噪声留给下一层处理,以便文本清洗策略
-    可以独立 tune,不影响这层接口稳定性)。
+    Returns a list whose length equals the PDF page count. Text is the
+    default pymupdf get_text() output (newlines preserved). No cleanup
+    here — header/footer noise is left to the next layer so the
+    cleanup strategy can be tuned independently without breaking this
+    interface.
 
-    没有 OCR fallback —— Phase 2 假设教材 PDF 有文本层。
+    No OCR fallback — this assumes the PDF has a text layer.
     """
     doc = pymupdf.open(str(pdf_path))
     try:
@@ -36,10 +39,10 @@ def extract_pages(pdf_path: str | Path) -> list[Page]:
 
 
 def join_pages_text(pages: list[Page], start_pdf_page: int, end_pdf_page: int) -> str:
-    """把指定 PDF 页范围(包含两端)的文本拼接成一段。
+    """Concatenate the text from a PDF page range (inclusive on both ends).
 
-    pages 是 extract_pages 的输出,已经按 pdf_page 顺序排好。
-    边界容错:end < start 或越界时返回空字符串。
+    pages is the output of extract_pages, already sorted by pdf_page.
+    Returns an empty string for boundary errors (end < start or out of range).
     """
     if end_pdf_page < start_pdf_page or start_pdf_page < 1:
         return ""

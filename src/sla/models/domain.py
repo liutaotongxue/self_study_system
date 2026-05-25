@@ -1,4 +1,4 @@
-"""应用层 ORM 模型。"""
+"""Application-level ORM models."""
 from datetime import datetime
 
 from sqlalchemy import JSON, ForeignKey, LargeBinary, String, Text, UniqueConstraint
@@ -75,22 +75,26 @@ class Question(Base):
 
 
 class DocumentStructure(Base):
-    """全书章节结构(human-anchored pivot)。
+    """Full-book chapter structure (human-anchored pivot).
 
-    写者 = S2「标目录→一发 LLM 抽取」(单次调用,非 agent);
-    读者 = S3 状态页(以本表为脊 LEFT JOIN Chunk/Note/KGNode)
-          + S5(全书大纲拼进学习 agent 上下文)。
-    (document_id, chapter_id) 唯一 = 幂等锚,与 Chunk 去重键同族,
-    使"重抽 skip、--force 才重"落到 DB 层而非仅代码约定。
-    chapter_id 形如 'ch1'/'ch1.3',必须与 Chunk.chapter_id 同形
-    (S3 LEFT JOIN 脊;不同形→状态页恒空且静默)。
+    Writer = S2 "mark TOC pages -> one-shot LLM extraction" (single call,
+        not an agent).
+    Readers = S3 status page (this table is the spine that LEFT JOINs
+        Chunk/Note/KGNode) + S5 (full-book outline injected into the
+        learning agent context).
+    UNIQUE (document_id, chapter_id) is the idempotency anchor — same
+    dedup family as Chunk — so "re-extract skip / --force overwrite"
+    is enforced at the DB layer, not just by code convention.
+    chapter_id has the form 'ch1' / 'ch1.3' and must match
+    Chunk.chapter_id exactly (S3 LEFT JOIN spine; any drift makes the
+    status page silently empty).
     """
     __tablename__ = "document_structure"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("document.id"))
-    section_id: Mapped[str] = mapped_column(String(100))   # 原 TOC 编号 '1.3'
-    chapter_id: Mapped[str] = mapped_column(String(100))    # DB 键 'ch1.3'
+    section_id: Mapped[str] = mapped_column(String(100))   # Original TOC numbering, e.g. '1.3'
+    chapter_id: Mapped[str] = mapped_column(String(100))    # DB key, e.g. 'ch1.3'
     title: Mapped[str] = mapped_column(String(500))
     book_page_start: Mapped[int] = mapped_column()
     source: Mapped[str] = mapped_column(String(20))         # llm | heuristic
