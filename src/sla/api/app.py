@@ -1,4 +1,4 @@
-"""FastAPI app。"""
+"""FastAPI app."""
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -15,7 +15,7 @@ app.include_router(routes_generation.router)
 
 @app.get("/", response_class=FileResponse)
 def root():
-    # P1b-i2:单用户 → 首页=书库页(原 JSON root 无外部消费者,见 P1b 决策 b)
+    # P1b-i2: single-user -> home page = library page (the original JSON root has no external consumers, see P1b decision b)
     return FileResponse(
         Path(__file__).parent.parent.parent.parent / "web" / "library.html",
         media_type="text/html",

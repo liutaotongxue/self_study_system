@@ -1,7 +1,7 @@
-"""Harness 运行时 endpoints。
+"""Harness runtime endpoints.
 
-Phase 1A 写了所有 GET(只读),Phase 1B-5 加 2 个 POST(触发 run + 触发 eval)
-+ 修了一个 GET eval 的排序 bug(有多条 EvalResult 时需要返回最新)。
+Phase 1A wrote all GETs (read-only); Phase 1B-5 added 2 POSTs (trigger run + trigger eval)
+plus fixed an ordering bug in GET eval (must return the latest when there are multiple EvalResult rows).
 """
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -56,7 +56,7 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
 
 @router.get("/runs/{run_id}/trace")
 def get_run_trace(run_id: int, db: Session = Depends(get_db)):
-    """完整 trace:run + 所有 steps + 每 step 的 tool_calls + 对应 tool_results。"""
+    """Full trace: run + all steps + each step's tool_calls + corresponding tool_results."""
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
@@ -102,7 +102,7 @@ def list_run_artifacts(run_id: int, db: Session = Depends(get_db)):
 
 @router.get("/runs/{run_id}/eval")
 def get_run_eval(run_id: int, db: Session = Depends(get_db)):
-    # 同一 Run 可能多次 rule_evaluate(改阈值/调 prompt 后重评),返回最新一条
+    # The same Run may be rule_evaluate'd multiple times (re-eval after threshold/prompt tweaks); return the latest
     e = (
         db.query(EvalResult)
         .filter(EvalResult.run_id == run_id)
@@ -119,22 +119,22 @@ def get_run_eval(run_id: int, db: Session = Depends(get_db)):
     }
 
 
-# ---------- Phase 1B-5: 触发动作 ----------
+# ---------- Phase 1B-5: trigger actions ----------
 
 @router.post("/tasks/{task_id}/runs", status_code=201)
 def create_run(task_id: int, db: Session = Depends(get_db)):
-    """同步触发一次 Run。Phase 1B 阻塞等跑完(~30-60 秒,~$0.1)。
+    """Synchronously trigger one Run. Phase 1B blocks until it completes (~30-60 sec, ~$0.1).
 
-    Phase 2 改异步(返回 202 + run_id,后台跑)。
+    Phase 2 will switch to async (return 202 + run_id, run in background).
     """
     task = db.get(Task, task_id)
     if task is None:
         raise HTTPException(404, "task not found")
 
-    # run_task 内部自己开关 session,不复用这里 dep-injected 的 db
+    # run_task opens/closes its own session internally; does not reuse the dep-injected db here
     run_id = run_task(task_id=task_id)
 
-    # run_task 在别的 session 里写了 Run 行,这里的 db 可能有缓存快照,先 expire
+    # run_task wrote the Run row in another session; this db may have a cached snapshot, so expire first
     db.expire_all()
     r = db.get(Run, run_id)
     return {
@@ -147,7 +147,7 @@ def create_run(task_id: int, db: Session = Depends(get_db)):
 
 @router.post("/runs/{run_id}/eval", status_code=201)
 def create_run_eval(run_id: int, db: Session = Depends(get_db)):
-    """触发一次规则评估,创建新 EvalResult 行,返回该行。"""
+    """Trigger one rule-based evaluation, create a new EvalResult row, return that row."""
     r = db.get(Run, run_id)
     if r is None:
         raise HTTPException(404, "run not found")
@@ -164,13 +164,13 @@ def create_run_eval(run_id: int, db: Session = Depends(get_db)):
     }
 
 
-# ---------- Phase 3-A 临时:本地 KG viewer ----------
+# ---------- Phase 3-A temporary: local KG viewer ----------
 
 @router.get("/viewer", response_class=FileResponse)
 def kg_viewer():
-    """本地 KG 可视化(三栏布局 + vis.js)。
-    跑 uvicorn 后浏览器开 http://localhost:8000/viewer 看图。
-    document_id 当前 hardcode = 2(Sutton & Barto),Phase 3 真做产品时改成 path param。
+    """Local KG visualization (three-column layout + vis.js).
+    After running uvicorn, open http://localhost:8000/viewer in the browser to view the graph.
+    document_id is currently hardcoded = 2 (Sutton & Barto); change to a path param in Phase 3 when productizing.
     """
     from pathlib import Path
     viewer_path = Path(__file__).parent.parent.parent.parent / "web" / "index.html"
@@ -181,16 +181,17 @@ def kg_viewer():
 
 @router.get("/documents/{document_id}/kg")
 def get_document_kg(document_id: int):
-    """返回 document 的 KG —— 原生 schema(3 node types + 4 edge types)。
+    """Return the document's KG -- native schema (3 node types + 4 edge types).
 
-    无 lossy 适配。消费者(任何 viewer/Anki/Notion 等)按这个格式适配,
-    我们不为单一 downstream 做格式妥协。
-    详细 schema 见 src/sla/harness/kg_export.py:to_native_json 的 docstring。
+    No lossy adaptation. Consumers (any viewer / Anki / Notion / etc.) adapt to this format;
+    we do not compromise the format for any single downstream.
+    See src/sla/harness/kg_export.py:to_native_json docstring for the detailed schema.
     """
     payload = to_native_json(document_id)
-    # 仅 "document 不存在" 才 404(to_native_json 此时返 document_title=None);
-    # 空 KG 是正常态(S2 标完目录、S4 尚未标内容)→ 200 + 空数组,让前端走
-    # viewer 主流程 + 空态横幅,不再退化到 chap-fs 旁路(S4 pivot 后该旁路废)。
+    # Only "document does not exist" should 404 (to_native_json returns document_title=None in that case);
+    # an empty KG is a normal state (S2 done labeling TOC, S4 not yet labeled content) -> 200 + empty arrays,
+    # letting the frontend run the viewer main flow + empty-state banner, no longer falling back to the
+    # chap-fs side path (that side path is retired after the S4 pivot).
     if payload["document_title"] is None:
         raise HTTPException(404, f"document_id={document_id} not found")
     return payload

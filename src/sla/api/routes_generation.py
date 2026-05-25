@@ -1,4 +1,4 @@
-"""P3b:UI 触发章节 生成/重建 端点(subprocess + job-status + 轮询)。"""
+"""P3b: UI-triggered chapter generate/rebuild endpoints (subprocess + job-status + polling)."""
 import base64
 import subprocess
 import sys
@@ -19,7 +19,7 @@ UPLOAD_DIR = ROOT / "uploads"
 
 
 def _start(document_id: int, chapter_id: str, mode: str, db: Session):
-    reconcile_generation_jobs(db)   # P3-4:先清死锁再判锁
+    reconcile_generation_jobs(db)   # P3-4: clear deadlocks before checking the lock
     active = (
         db.query(GenerationJob)
         .filter(GenerationJob.status.in_(("queued", "running")))
@@ -37,10 +37,10 @@ def _start(document_id: int, chapter_id: str, mode: str, db: Session):
     db.add(job)
     db.commit()
     db.refresh(job)
-    # D2:独立会话/进程组 → uvicorn --reload / 重启不杀生成子进程。
-    # POSIX 用 start_new_session=True(setsid);Windows 用 CREATE_NEW_PROCESS_GROUP。
-    # 不可二者一起传:start_new_session 在 Win 静默忽略,创建会回到 inheriting,
-    # uvicorn 重启会连带杀子。
+    # D2: independent session/process group -> uvicorn --reload / restart does not kill the generation subprocess.
+    # POSIX uses start_new_session=True (setsid); Windows uses CREATE_NEW_PROCESS_GROUP.
+    # Cannot pass both: start_new_session is silently ignored on Win, the process falls back to inheriting,
+    # and a uvicorn restart will kill the child along with it.
     detach_kwargs = (
         {"start_new_session": True}
         if sys.platform != "win32"
@@ -66,7 +66,7 @@ def start_rebuild(document_id: int, chapter_id: str, db: Session = Depends(get_d
 
 @router.post("/documents/{document_id}/ingest-chapter", status_code=202)
 def start_ingest(document_id: int, chapter: int, db: Session = Depends(get_db)):
-    # 增量 ingest 单章:chapter_id 字段承载章号串("4")→ run_generation ingest 分支
+    # Incrementally ingest a single chapter: the chapter_id field carries the chapter number string ("4") -> run_generation ingest branch
     if chapter < 1:
         raise HTTPException(400, "chapter 必须为正整数")
     return _start(document_id, str(chapter), "ingest", db)
@@ -77,9 +77,9 @@ def start_extract_structure(
     document_id: int, toc: str, force: bool = False,
     db: Session = Depends(get_db),
 ):
-    # human-anchored S2:人选目录页 → 一发 LLM 抽全书结构(非 agent)。
-    # chapter_id 字段承载 "toc:<页范围>[!force]"(复用 ingest 串载荷先例,
-    # mode=String(16) 故名 "extract_toc"=11)→ run_generation extract_toc 分支。
+    # human-anchored S2: human picks the TOC pages -> one-shot LLM extracts the whole-book structure (not an agent).
+    # The chapter_id field carries "toc:<page-range>[!force]" (reusing the ingest string-payload precedent;
+    # mode=String(16) so name is "extract_toc"=11 chars) -> run_generation extract_toc branch.
     if not toc.strip():
         raise HTTPException(400, "toc 页范围必填,如 7-10 或 7,8,9")
     payload = f"toc:{toc.strip()}" + ("!force" if force else "")
@@ -92,10 +92,10 @@ def start_extract_content(
     document_id: int, chapter_id: str, pages: str, force: bool = False,
     db: Session = Depends(get_db),
 ):
-    # human-anchored S4:人选该节内容页 → 一发视觉 OCR + 切块写 Chunk。
-    # chapter_id 字段承载 "{ch}|p={pages}[!force]" → run_generation extract_content 分支。
-    # /chapters route 用 _ch_base 剥离 |p= 后缀回真章,以匹配 spine。
-    # mode="extract_content"=15 字符 ✓ String(16)。
+    # human-anchored S4: human picks the section's content pages -> one-shot vision OCR + chunking writes Chunk.
+    # The chapter_id field carries "{ch}|p={pages}[!force]" -> run_generation extract_content branch.
+    # The /chapters route uses _ch_base to strip the |p= suffix back to the true chapter, to match the spine.
+    # mode="extract_content"=15 chars, fits String(16).
     if not pages.strip():
         raise HTTPException(400, "pages 必填,如 50-65 或 50,52-55")
     if not chapter_id.startswith("ch"):
@@ -105,8 +105,8 @@ def start_extract_content(
 
 
 def _parse_page_spec(s: str) -> list[int]:
-    """'50-65' / '50,52-55' / '50' → sorted unique 1-based 页。
-    与 structure_extract.parse_toc_payload 内部页解析同语义,无 toc: 前缀。"""
+    """'50-65' / '50,52-55' / '50' -> sorted unique 1-based pages.
+    Same semantics as structure_extract.parse_toc_payload's internal page parsing, without the toc: prefix."""
     pages: set[int] = set()
     for tok in s.replace(" ", "").split(","):
         if not tok:
@@ -138,8 +138,8 @@ def get_page_thumbs(
     document_id: int, pages: str,
     db: Session = Depends(get_db),
 ):
-    """C-方案 $0 预览端点:页范围 → JPEG q=75 zoom=0.8 缩略图 b64。
-    付费 OCR 前给前端确认 modal 用,免 content-filter/选错页踩坑。"""
+    """Plan-C $0 preview endpoint: page range -> JPEG q=75 zoom=0.8 thumbnail b64.
+    Used by the frontend confirmation modal before paid OCR, to avoid content-filter / wrong-page pitfalls."""
     if not pages.strip():
         raise HTTPException(400, "pages 必填,如 50-65 或 50,52-55")
     try:
@@ -157,7 +157,7 @@ def get_page_thumbs(
             raise HTTPException(
                 400, f"页 {max(pgs)} 超出 PDF 总页 {pdf.page_count}",
             )
-        mtx = pymupdf.Matrix(0.8, 0.8)   # ~64 DPI,看节标题/段首字够用
+        mtx = pymupdf.Matrix(0.8, 0.8)   # ~64 DPI, sufficient to read section titles / first words of paragraphs
         out = []
         for pg in pgs:
             pix = pdf[pg - 1].get_pixmap(matrix=mtx)
@@ -178,13 +178,13 @@ async def upload_pdf(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """P2:网页上传新书 = 仅登记(存盘 + 建 Document,status='uploaded'),不解析。
+    """P2: web upload of a new book = registration only (write to disk + create Document, status='uploaded'); no parsing.
 
-    解耦设计:upload 不起 job → 无 _start → 无 409 → 结构性消解空壳书问题。
-    书随即出现在书库;用户点书名进 viewer,从「章节状态」抽 TOC → 标内容页
-    → 生成,human-anchored 节级流程。'uploaded' 是显式正常态,非错误。
+    Decoupled design: upload does not start a job -> no _start -> no 409 -> structurally dissolves the empty-shell-book problem.
+    The book then appears in the library; the user clicks the title to enter the viewer, extracts the TOC via "chapter state"
+    -> marks content pages -> generates: a human-anchored section-level workflow. 'uploaded' is an explicit normal state, not an error.
     """
-    name = Path(file.filename or "").name              # 去目录成分 → 无路径穿越
+    name = Path(file.filename or "").name              # strip directory components -> no path traversal
     if not name.lower().endswith(".pdf"):
         raise HTTPException(400, "只接受 .pdf 文件")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

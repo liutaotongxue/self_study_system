@@ -1,4 +1,4 @@
-"""应用层只读 endpoints(Phase 1A 范围)。"""
+"""Application-layer read-only endpoints (Phase 1A scope)."""
 import io
 import json
 import re
@@ -52,8 +52,8 @@ def list_documents(domain_id: int | None = None, db: Session = Depends(get_db)):
     if domain_id is not None:
         q = q.filter(Document.domain_id == domain_id)
     rows = q.order_by(Document.id).all()
-    # has_structure:该 doc 是否已标注目录(document_structure 有行)。
-    # 一次聚合查避免 N+1;前端用之代替"页数·status·id" 这类技术元数据。
+    # has_structure: whether the doc has had its TOC annotated (document_structure has rows).
+    # Single aggregate query to avoid N+1; frontend uses this in place of technical metadata like "page count / status / id".
     ds_counts = dict(
         db.query(DocumentStructure.document_id,
                  func.count(DocumentStructure.id))
@@ -80,7 +80,7 @@ def get_document(document_id: int, db: Session = Depends(get_db)):
 
 @router.get("/documents/{document_id}/pdf")
 def get_document_pdf(document_id: int, db: Session = Depends(get_db)):
-    """P4:原文对照用,内嵌原 PDF。路径取自 DB 非用户输入 → 无穿越。"""
+    """P4: for source-text comparison, embed the original PDF. Path comes from DB rather than user input -> no traversal."""
     d = db.get(Document, document_id)
     if not d:
         raise HTTPException(404, "document not found")
@@ -91,12 +91,13 @@ def get_document_pdf(document_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/documents/{document_id}")
 def delete_document(document_id: int, db: Session = Depends(get_db)):
-    """删书 + 级联删其全部学习内容(破坏性、不可逆)。
+    """Delete book + cascade-delete all its learning content (destructive, irreversible).
 
-    显式有序删(不靠 SQLite FK):kg_edge → kg_node(FK→note.id,故必先于 note)
-    → note/question/chunk/generation_job → task.document_id=NULL(脱钩 agent 轨迹,
-    不深删 run/step/…)→ document。PDF 仅当解析后在 UPLOAD_DIR 内(我们的拷贝)
-    才删;外部用户文件(如 /Books/…)保留。运行中任务则拒删(409),防子进程写已删行。
+    Explicit ordered delete (not relying on SQLite FK): kg_edge -> kg_node (FK->note.id, so must precede note)
+    -> note/question/chunk/generation_job -> task.document_id=NULL (detach agent trajectories,
+    do not deep-delete run/step/...) -> document. PDF is deleted only if, after resolving, it lives in UPLOAD_DIR
+    (our copy); external user files (e.g. /Books/...) are preserved. If a task is running, refuse delete (409)
+    to prevent the child process from writing to already-deleted rows.
     """
     reconcile_generation_jobs(db)
     doc = db.get(Document, document_id)
@@ -132,8 +133,8 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
               .delete(synchronize_session=False))
     n_chunk = (db.query(Chunk).filter(Chunk.document_id == document_id)
                .delete(synchronize_session=False))
-    # Task #61 核销:1c 写真行后,删该书必须级联删 document_structure 否则 orphan。
-    # FK→document、无 FK→note → 排序自由,放此处(紧邻 chunk,同 doc-scoped 内容)。
+    # Task #61 closeout: after 1c writes real rows, deleting the book must cascade-delete document_structure, else orphans.
+    # FK->document, no FK->note -> ordering is free; placed here (adjacent to chunk, same doc-scoped content).
     n_struct = (db.query(DocumentStructure)
                 .filter(DocumentStructure.document_id == document_id)
                 .delete(synchronize_session=False))
@@ -201,7 +202,7 @@ def list_notes(document_id: int, chapter_id: str | None = None, db: Session = De
     if chapter_id:
         q = q.filter(Note.chapter_id == chapter_id)
     rows = q.order_by(Note.id.desc()).all()
-    # 每章物理起始页(用户标内容页时输入的 page_start);用于 cmp 面板 PDF 跳页
+    # Per-chapter physical start page (the page_start the user entered when marking content pages); used for PDF page-jump in the cmp panel
     page_map = dict(
         db.query(Chunk.chapter_id, func.min(Chunk.page_start))
         .filter(Chunk.document_id == document_id, Chunk.page_start.isnot(None))
@@ -221,25 +222,25 @@ _HEADING_RE = re.compile(r"^#{1,4}\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _extract_heading(content_md: str) -> str:
-    """取 markdown 第一个 # 标题文本去掉前导编号,fallback 空串。"""
+    """Take the first markdown `#` heading text, strip leading numbering; fallback empty string."""
     m = _HEADING_RE.search(content_md or "")
     if not m:
         return ""
     h = m.group(1).strip()
-    # 去掉常见 "1.1 " / "1.1.2 " / "第1节 " 前缀,让文件名更短
+    # Strip common "1.1 " / "1.1.2 " / "Section 1 " prefixes to shorten the filename
     h = re.sub(r"^[\d.]+\s+", "", h)
     return h
 
 
 @router.get("/documents/{document_id}/notes-export")
 def export_notes(document_id: int, db: Session = Depends(get_db)):
-    """C-方案导出:整本 doc 全部 note → zip(一节一 .md + manifest.json)。
-    文件名 ch{id}_{heading-slug}.md;heading 缺失则纯 chapter_id.md。"""
+    """Plan-C export: all notes for the whole doc -> zip (one .md per section + manifest.json).
+    Filename ch{id}_{heading-slug}.md; if heading is missing, plain chapter_id.md."""
     doc = db.get(Document, document_id)
     if doc is None:
         raise HTTPException(404, f"document {document_id} 不存在")
 
-    from sla.harness.kg import slugify   # lazy:kg.py 顶层 import langchain 重
+    from sla.harness.kg import slugify   # lazy: kg.py top-level imports langchain (heavy)
 
     notes = (
         db.query(Note)
@@ -251,7 +252,7 @@ def export_notes(document_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, f"document {document_id} 无任何 note 可导出")
 
     doc_slug = slugify(doc.title or f"document-{document_id}")
-    root = doc_slug  # zip 内根目录
+    root = doc_slug  # root directory inside the zip
 
     manifest = {
         "document_id": document_id,
@@ -269,7 +270,7 @@ def export_notes(document_id: int, db: Session = Depends(get_db)):
             head_slug = slugify(heading) if heading else ""
             base = f"{n.chapter_id}_{head_slug}" if head_slug else n.chapter_id
             name = f"{base}.md"
-            # 防 collision(同章重复 / heading 抽空):带 -2/-3 后缀
+            # Prevent collision (duplicates in same chapter / empty extracted heading): append -2/-3 suffix
             i = 2
             while name in seen_names:
                 name = f"{base}-{i}.md"
@@ -287,8 +288,8 @@ def export_notes(document_id: int, db: Session = Depends(get_db)):
         zf.writestr(f"{root}/manifest.json",
                     json.dumps(manifest, ensure_ascii=False, indent=2))
 
-    # starlette headers 必须 latin-1 安全:filename= 用 ASCII fallback,
-    # filename*=UTF-8'' percent-encode 才允许中文(现代浏览器都识别 filename*)
+    # starlette headers must be latin-1 safe: filename= uses an ASCII fallback,
+    # filename*=UTF-8'' percent-encoded allows non-ASCII (modern browsers all recognize filename*)
     download_name = f"{doc_slug}-notes.zip"
     ascii_slug = (
         "".join(c for c in doc_slug if c.isascii() and (c.isalnum() or c in "-_"))
@@ -322,11 +323,11 @@ def list_questions(document_id: int, chapter_id: str | None = None, db: Session 
 
 @router.get("/documents/{document_id}/chapters")
 def list_chapter_status(document_id: int, db: Session = Depends(get_db)):
-    """每章生成状态。S3 pivot:脊=document_structure(若有);否则回退
-    Chunk.chapter_id distinct(legacy doc 兼容,零回归)。
-    state: needs_content(DS 有此章但无 chunk) | generate | rebuild_kg | done。
-    active_job=running job_id|null。
-    P3b:on-read reconcile 清死锁;保数组 shape,加 title/has_chunk 字段不破契约。"""
+    """Per-chapter generation state. S3 pivot: spine = document_structure (if present); otherwise fall back
+    to Chunk.chapter_id distinct (legacy doc compatibility, zero regression).
+    state: needs_content (DS has this chapter but no chunk) | generate | rebuild_kg | done.
+    active_job = running job_id | null.
+    P3b: on-read reconcile clears deadlocks; preserves array shape; adding title/has_chunk fields does not break the contract."""
     reconcile_generation_jobs(db)
 
     def _ck(c):
@@ -335,7 +336,7 @@ def list_chapter_status(document_id: int, db: Session = Depends(get_db)):
         except Exception:
             return [99]
 
-    # 脊:DS 有 → 用 DS(带 title);DS 无 → 回退 Chunk distinct(legacy)
+    # Spine: DS present -> use DS (with title); DS absent -> fall back to Chunk distinct (legacy)
     ds_rows = (db.query(DocumentStructure.chapter_id, DocumentStructure.title)
                .filter(DocumentStructure.document_id == document_id).all())
     if ds_rows:
@@ -343,9 +344,9 @@ def list_chapter_status(document_id: int, db: Session = Depends(get_db)):
     else:
         spine = [(r[0], None) for r in db.query(Chunk.chapter_id)
                  .filter(Chunk.document_id == document_id).distinct() if r[0]]
-    # S3 actionable rule:只保留章/节两级(ch1 / ch1.2);三级+(ch1.2.3 / ch6.1.1)
-    # 是节的子部分,若 S4 也按子部分标内容会与父节重复抽 → 隐藏。
-    # document_structure 仍存全级(信息无损,S5 大纲可用)。
+    # S3 actionable rule: keep only chapter/section levels (ch1 / ch1.2); level 3+ (ch1.2.3 / ch6.1.1)
+    # are sub-parts of a section; if S4 also marks content per sub-part it would duplicate-extract with the
+    # parent section -> hide them. document_structure still stores all levels (lossless, S5 outline can use them).
     spine = [(cid, ti) for cid, ti in spine if cid.count(".") <= 1]
     spine.sort(key=lambda x: _ck(x[0]))
 
@@ -356,8 +357,8 @@ def list_chapter_status(document_id: int, db: Session = Depends(get_db)):
     kg_ch = {r[0] for r in db.query(KGNode.chapter_id)
              .filter(KGNode.document_id == document_id).distinct() if r[0]}
     def _ch_base(s):
-        # S4 把页范围编码在 chapter_id("ch1.2|p=50-65"),active dict 要剥
-        # 回真章以匹配 spine 行;无 "|" 时不变。
+        # S4 encodes the page range into chapter_id ("ch1.2|p=50-65"); the active dict needs to
+        # strip back to the true chapter to match the spine row; unchanged when there's no "|".
         return s.split("|", 1)[0]
     active = {
         _ch_base(j.chapter_id): j.id
