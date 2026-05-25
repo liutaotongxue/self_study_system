@@ -1,24 +1,24 @@
-"""Phase 2-W2-1:多章节 orchestrator —— 自动学完某 document 的某章全部节。
+"""Multi-section orchestrator: study every section under a given chapter.
 
-跑法:
+Usage:
   python scripts/study_book.py --document-id 2 --chapter 1
-    # 自动学完 document=2 的 ch1.1..ch1.8
+    # Study all sections ch1.1..ch1.8 in document 2
 
   python scripts/study_book.py --document-id 2 --chapter 1 --sections ch1.3,ch1.4
-    # 只学指定的几节
+    # Only study the specified sections
 
-成本:每节 ~$0.10-0.15;一章 8 节 ~$0.80-1.00。
-时间:每节 30-60 秒,串行跑,8 节约 5-8 分钟。
+Cost:  ~$0.10-0.15 per section; a chapter of 8 sections ~$0.80-1.00.
+Time:  30-60 seconds per section, run serially; ~5-8 minutes for 8 sections.
 
-流程:
-  1. discover_chapters:从 DB 找 (document_id, chapter prefix) 下所有 chapter_id
-  2. 逐节(--sections 没指定就是全部):
-     - seed_task_for_chapter:幂等创建 Task
-     - run_task:跑完一个 Run + 落 Step/ToolCall/Artifact
-     - rule_evaluate:6 条 rule,落 EvalResult
-  3. 末尾汇总:几节通过、失败原因
+Flow:
+  1. discover_chapters: list every chapter_id under (document_id, chapter prefix).
+  2. For each section (or each in --sections):
+     - seed_task_for_chapter: create a Task idempotently
+     - run_task: execute one Run and persist Step/ToolCall/Artifact rows
+     - rule_evaluate: apply 6 rules, persist EvalResult
+  3. Final summary: how many sections passed and the failure reasons.
 
-不并发(Phase 2 单用户场景,串行就够)。
+No concurrency (single-user scenario; serial is sufficient).
 """
 import argparse
 import sys

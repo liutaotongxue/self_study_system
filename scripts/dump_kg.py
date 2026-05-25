@@ -1,8 +1,8 @@
-"""Phase 2-W3-6 CLI:把 KG 以原生 JSON 格式 dump 到文件或 stdout。
+"""Dump the KG of a document as native JSON to a file or stdout.
 
-跑法:
+Usage:
   python scripts/dump_kg.py --document-id 2 --output /tmp/sutton_kg.json
-  python scripts/dump_kg.py --document-id 2                              # 默认打 stdout
+  python scripts/dump_kg.py --document-id 2                              # Defaults to stdout
   python scripts/dump_kg.py --document-id 2 --indent 4
 """
 import argparse

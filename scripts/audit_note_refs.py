@@ -1,10 +1,11 @@
-"""O4:note_ref 错配审计 + 显式修复。
+"""O4: note_ref integrity audit and explicit repair.
 
-  python scripts/audit_note_refs.py --document-id 2          # 只报告(含 origin 分类)
-  python scripts/audit_note_refs.py --document-id 2 --fix    # 仅 auto-fix A_idreuse,余列出交人
-  python scripts/audit_note_refs.py                          # 全库(document_id=None)
+  python scripts/audit_note_refs.py --document-id 2          # Report only (with origin classification)
+  python scripts/audit_note_refs.py --document-id 2 --fix    # Auto-fix A_idreuse only; list the rest for human review
+  python scripts/audit_note_refs.py                          # Audit the whole DB (document_id=None)
 
-仅 A_idreuse 自动重派生 note_ref;B_relabel/AMBIGUOUS/NO_TARGET 只列出,人工裁决。
+Only A_idreuse violations are automatically re-derived. B_relabel,
+AMBIGUOUS, and NO_TARGET cases are listed for human adjudication.
 """
 import argparse
 import sys

@@ -1,11 +1,19 @@
-"""P3b runner:UI 触发的章节 生成/重建。被 routes_generation Popen detached 起。
+"""Executor for UI-triggered per-chapter generation/rebuild jobs.
+
+Spawned detached by routes_generation via Popen.
 
   python scripts/run_generation.py --job-id J [--dry-run]
 
-generate: study_book(--sections 锁单章) → build_kg(--notes 锁单章) → backfill(整 doc)
-rebuild : 跳 study_book;build_kg(--notes) → backfill
-chapter_id 用【精确等值 ==】查 note ids(非前缀 LIKE,否则 ch3.1 误吞 ch3.10
-等,跨章累加灾难从查询后门复活)。backfill 整 doc(幂等,无单章义)。
+generate: study_book (--sections locks single chapter)
+          -> build_kg (--notes locks single chapter)
+          -> backfill (whole doc)
+rebuild : skip study_book; build_kg (--notes) -> backfill
+
+Note id lookup uses exact equality (==) rather than prefix LIKE, so e.g.
+ch3.1 cannot accidentally pull in ch3.10 — preventing cross-chapter
+accumulation bugs from re-entering through the query layer.
+backfill runs against the whole doc (idempotent; no single-chapter
+semantics).
 """
 import argparse
 import os

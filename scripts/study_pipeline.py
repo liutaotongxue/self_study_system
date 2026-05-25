@@ -1,28 +1,44 @@
-"""一键端到端:ingest → study_book → build_kg → backfill,自用入口。
+"""End-to-end one-command pipeline: ingest -> study_book -> build_kg -> backfill.
 
   python scripts/study_pipeline.py --pdf ~/Books/X.pdf --domain "RL" --chapter 4
 
-设计:
-  - document_id 不靠肉眼抄:ingest 后按 Document.file_path == abspath(--pdf)
-    查库解析(与 ingest 去重同键,确定性,不解析 stdout,只读不污染)。
-  - 每步 subprocess + 检 returncode;任一步 gate FAIL(Eval-1 章检测 / O4
-    note_ref)→ 链立即停、报哪步、不续跑(不在坏数据上接力)。exit 1。
-  - study_book 非幂等(seed_task 按 title 幂等,但 Note 由 agent save_note
-    每 run 产 1 个、无 (doc,chapter) upsert,重跑累加不替换;实测 doc1/ch1.3
-    累积 7)。一键化零摩擦重跑会静默累加 → 污染自用信号 + viewer 锚点歧义。
-    故 step2 前置累加预检:已有 Note 则 STOP(exit 3),--allow-accumulate
-    显式放行。build_kg upsert first-wins 幂等(O4 验),不在预检范围。
-    真修 study_book 重跑语义(replace/version/skip)是触及 6 验收节点 +
-    O4 chap_note 的产品决策,deferred,自用该 inform 它;编排器只负责让它
-    别在自用轮静默咬人。
-  - v1 单章。【拒 --chapter all】:study_book/build_kg discover 是
-    LIKE "ch{X}.%",传 "all" → "chall.%" 匹配 0 → study_book.py:126
-    sys.exit(1) loud FAIL。经编排器:step1 前即 exit(2) 拒之,避免那趟
-    全书 ingest(贵)+ 链停 step2 的 chunks-有/Notes-无半态。非 silent;
-    v1 上游拒之以省无用 ingest + 困惑半态。"all" 跨章一把过是独立需求。
-  - backfill 烤死好默认 --use-embedding-fallback --use-cross-note-fallback
-    (不加会掉到 ~89%,易忘)。
-  - 末尾探测 :8000 打印确切下一步。
+Design notes:
+
+  - document_id is not copy-pasted by the user. After ingest, look up the
+    document by Document.file_path == abspath(--pdf) (same dedup key as
+    ingest itself — deterministic, read-only, no stdout parsing).
+
+  - Each step runs as a subprocess and its returncode is checked. If any
+    gate fails (Eval-1 chapter detection / O4 note_ref integrity) the
+    chain halts immediately, reports which step failed, and does not
+    proceed on dirty data (exit 1).
+
+  - study_book is NOT idempotent: seed_task is idempotent by title, but
+    Notes are produced by the agent's save_note tool — one per run, with
+    no (doc, chapter) upsert. Re-running accumulates rather than replaces
+    (observed: doc1/ch1.3 grew to 7 Notes). A one-command wrapper that
+    silently re-runs would corrupt the signal and add anchor ambiguity in
+    the viewer. So step 2 runs an accumulation pre-check: STOP (exit 3)
+    if Notes already exist; pass --allow-accumulate to explicitly bypass.
+    build_kg upsert is first-wins idempotent (verified by O4), so it is
+    not pre-checked. Properly fixing study_book re-run semantics
+    (replace/version/skip) touches 6 acceptance points + O4 chap_note —
+    deferred as a product decision; the orchestrator's job here is just
+    to refuse to silently bite during self-use runs.
+
+  - v1 only handles a single chapter. --chapter all is rejected explicitly:
+    study_book/build_kg's discovery is LIKE "ch{X}.%", so passing "all"
+    becomes "chall.%" which matches 0 rows -> study_book.py:126 loud
+    sys.exit(1). The orchestrator exits earlier (exit 2) at step 1 to
+    avoid the expensive whole-book ingest followed by a chain halt at
+    step 2 with chunks present but no Notes. Cross-chapter "all" support
+    is a separate feature.
+
+  - Backfill is invoked with --use-embedding-fallback and
+    --use-cross-note-fallback hard-coded as defaults (without them anchor
+    coverage drops to ~89%; easy to forget).
+
+  - At the end, probe :8000 and print the exact next-step URL.
 """
 import argparse
 import subprocess

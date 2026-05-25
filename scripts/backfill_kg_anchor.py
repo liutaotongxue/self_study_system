@@ -1,27 +1,34 @@
-"""Phase 3-1-3 + 3-2 (A1 + A2):回填 kg_node.note_anchor_slug + cross_note_*。
+"""Backfill kg_node.note_anchor_slug + cross_note_* for each KGNode.
 
-对每个 KGNode,找它的 anchor:
+For every KGNode, locate its anchor heading using the following priority.
 
-匹配优先级(同 Note 内):
-  1. heading 命中(label 出现在 ## 标题里)—— 这一节就是讲它的,最权威
-  2. content 命中(label 出现在 section 正文)—— 这一节提到它,次选
-  3. embedding 命中(--use-embedding-fallback):label 跟 heading 语义相似度
-     ≥ threshold,救字面 mismatch(如 ε vs epsilon)
+Within the home Note:
+  1. Heading hit: label appears inside a ## heading. The section is about
+     this concept — most authoritative match.
+  2. Content hit: label appears in the section body. The section mentions
+     this concept — secondary match.
+  3. Embedding hit (--use-embedding-fallback): cosine similarity between
+     label and heading ≥ threshold. Rescues literal mismatches such as
+     `ε` vs `epsilon`.
 
-A2 跨 Note(home Note 全失败时):
-  4. cross_embedding(--use-cross-note-fallback):在同 document 其他 Note 里跑
-     embedding,找最佳 heading;写 cross_note_id + cross_note_slug
+Cross-Note fallback (when all home-Note passes miss):
+  4. cross_embedding (--use-cross-note-fallback): run the embedding match
+     against headings of other Notes in the same document; pick the best.
+     Persists as cross_note_id + cross_note_slug.
 
-A2 label-length-aware threshold:
-  - ≤2 词 label:0.85(短词在 embedding 空间噪音大,严格才能不假阳性)
-  - ≥3 词 label:0.7 (home note Pass 3) / 0.75 (cross note Pass 4,搜索空间大,稍严)
+Label-length-aware threshold:
+  - ≤2 word label: 0.85 (short labels are noisy in embedding space;
+    strict threshold avoids false positives).
+  - ≥3 word label: 0.7 (home Note Pass 3) / 0.75 (cross-Note Pass 4 —
+    larger search space, slightly stricter).
 
-跑法:
+Usage:
   python scripts/backfill_kg_anchor.py --document-id 2
   python scripts/backfill_kg_anchor.py --document-id 2 --use-embedding-fallback --use-cross-note-fallback
   python scripts/backfill_kg_anchor.py --dry-run
 
-成本:Pass 1/2 $0;Pass 3/4 本地 sentence-transformers 模型,首跑下载 ~80MB,后续 0
+Cost: Pass 1/2 are free. Pass 3/4 use a local sentence-transformers model
+(downloads ~80MB on first run; subsequent runs are free).
 """
 import argparse
 import re

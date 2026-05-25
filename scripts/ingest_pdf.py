@@ -1,21 +1,26 @@
-"""Phase 2-W1-5:把 PDF 灌进数据库(Document + Chunks)。
+"""Ingest a PDF into the database (Document + Chunks).
 
-跑法:
+Usage:
   python scripts/ingest_pdf.py --pdf /path/to/book.pdf --domain "Reinforcement Learning" --chapter 1
 
-参数:
-  --pdf      <path>             PDF 文件路径
-  --domain   <name>             Domain 名称(已存在就复用,否则新建)
-  --chapter  <num|"all">        只解析某章(1, 2, ...),"all" 解全本(默认 1)
-  --force                       同 (document_id, chapter_id) 已有 chunks 时强制覆盖
+Arguments:
+  --pdf      <path>             Path to the PDF file
+  --domain   <name>             Domain name (reused if exists, created otherwise)
+  --chapter  <num|"all">        Parse a single chapter (1, 2, ...) or "all"
+                                for the whole book (default: 1)
+  --force                       Overwrite existing chunks for the same
+                                (document_id, chapter_id)
 
-幂等:
-  - Domain 按 name 去重
-  - Document 按 file_path 去重(同一 PDF 多次跑不重建 document)
-  - Chunk 按 (document_id, chapter_id) 去重,默认跳过已有,--force 删了再写
+Idempotency:
+  - Domain deduped by name
+  - Document deduped by file_path (re-running on the same PDF reuses the
+    same document row)
+  - Chunk deduped by (document_id, chapter_id); skipped by default if
+    present, deleted-then-rewritten with --force
 
-输出:
-  打印新建/复用的 domain_id / document_id,以及每节切了几个 chunk。
+Output:
+  Prints the created/reused domain_id and document_id, plus the number
+  of chunks generated per section.
 """
 import argparse
 import sys

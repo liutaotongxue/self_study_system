@@ -1,22 +1,22 @@
-"""Phase 2-W3-5 orchestrator:批量跑 KG 抽取 + 幂等 upsert 到 kg_node / kg_edge。
+"""Batch KG extraction orchestrator with idempotent upsert into kg_node / kg_edge.
 
-跑法:
+Usage:
   python scripts/build_kg.py --document-id 2 --chapter 1
-  python scripts/build_kg.py --document-id 2 --chapter 1 --notes 11,12,13   # 只指定几个 Note
-  python scripts/build_kg.py --document-id 2 --chapter 1 --dry-run         # 看抽取不写库
+  python scripts/build_kg.py --document-id 2 --chapter 1 --notes 11,12,13   # Only the given Notes
+  python scripts/build_kg.py --document-id 2 --chapter 1 --dry-run         # Extract, don't write
 
-流程(对每个 Note 串行):
-  1. extract_kg_from_note(note_id, context_chapter_depth=3) —— 喂上下文做 dedup hint
-  2. 对每个 concept upsert KGNode:
-     - 按 slug(label) 在同 document 内全局查(跨章合并同名)
-     - 找到 → 直接复用,不更新 description/type(first-wins,简单可预测)
-     - 没找到 → 新建,external_id = f'{doc}_{chap}_{slug}'
-  3. 对每个 relation upsert KGEdge:
-     - source/target 通过 label_to_node map 找节点 id
-     - 复合 UNIQUE (source, target, type) 防重复,直接 skip
-  4. 每个 Note 一次 commit
+Per-Note flow (serial):
+  1. extract_kg_from_note(note_id, context_chapter_depth=3) — feeds context as dedup hint
+  2. Upsert KGNode for each concept:
+     - Look up by slug(label) within the document (cross-chapter merge by name)
+     - Found → reuse, do not update description/type (first-wins, simple/predictable)
+     - Not found → create with external_id = f'{doc}_{chap}_{slug}'
+  3. Upsert KGEdge for each relation:
+     - Resolve source/target via label_to_node map
+     - Composite UNIQUE (source, target, type) prevents duplicates; skip on conflict
+  4. Commit per Note.
 
-不并发(单用户场景,串行 8 章 ~4 分钟够用)。
+No concurrency (single-user; serial is fine, ~4 min for 8 chapters).
 """
 import argparse
 import sys

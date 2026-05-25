@@ -1,9 +1,14 @@
-"""只解析原书 TOC → 写 Document.parsed_outline(零碰 chunk、零 O1/O2 gate)。
+"""Parse the original PDF TOC and write Document.parsed_outline.
 
-为何独立于 ingest_pdf(承重安全,非可读性):重跑 `ingest_pdf --chapter all`
-会(a)跑 whole-book O1/O2 gate,未验章节 TOC 触雷即 sys.exit、parsed_outline
-连坐没写成;(b)对尚无 chunk 的章全量灌入(非预期大写入 + 新 gate 风险)。
-本脚本只 extract_pages → parse_toc_text → merge 写 parsed_outline,零这两个耦合。
+This script touches no chunk rows and triggers no O1/O2 gates.
+
+Why it is separate from ingest_pdf (safety, not just readability):
+re-running `ingest_pdf --chapter all` would (a) run whole-book O1/O2
+gates and abort on any unverified chapter TOC, leaving parsed_outline
+unwritten as collateral damage; (b) re-ingest chapters that have no
+chunks yet, causing an unintended large write plus exposure to new
+gates. This script only does extract_pages -> parse_toc_text -> merge
+into parsed_outline, free of both couplings.
 
   python scripts/backfill_outline.py --document-id 2
 """
