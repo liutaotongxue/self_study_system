@@ -1,10 +1,10 @@
-"""全局配置,从 .env 读取。"""
+"""Global configuration, loaded from .env."""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     anthropic_api_key: str = ""
-    google_api_key: str = ""               # S4 vision OCR (Gemini),Anthropic filter 规避路径
+    google_api_key: str = ""               # S4 vision OCR (Gemini); workaround for Anthropic content filter
     database_url: str = "sqlite:///./app.db"
     env: str = "dev"
 

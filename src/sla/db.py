@@ -1,4 +1,4 @@
-"""SQLAlchemy engine、session、declarative base。"""
+"""SQLAlchemy engine, session, and declarative base."""
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -6,10 +6,11 @@ from sla.config import settings
 
 
 class Base(DeclarativeBase):
-    """所有 ORM 模型的基类。"""
+    """Base class for all ORM models."""
 
 
-# SQLite 专用参数:check_same_thread=False 让 FastAPI 多线程访问安全
+# SQLite-specific: check_same_thread=False lets FastAPI access the connection
+# safely from multiple threads.
 engine_kwargs = {}
 if settings.database_url.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
@@ -19,7 +20,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def get_db():
-    """FastAPI 依赖注入:每个请求一个 session。"""
+    """FastAPI dependency: one session per request."""
     db = SessionLocal()
     try:
         yield db
