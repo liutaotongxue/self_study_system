@@ -5,14 +5,40 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 
 ---
 
+## 架构总览
+
+```mermaid
+flowchart TD
+    Upload["上传 PDF<br/>(主页)"] --> S2["S2 · 标 TOC 页范围<br/>(人工)"]
+    S2 -->|"视觉 LLM<br/>Gemini 2.5-flash"| Struct[("document_structure 表")]
+    Struct --> S4["S4 · 标某节内容页<br/>(人工)"]
+    S4 -->|"视觉 OCR<br/>Gemini 2.5-flash"| Chunks[("chunk 表")]
+    Chunks --> S5a["S5a · 学习 Agent<br/>(LangGraph harness)"]
+    S5a -->|"工具链<br/>list_chunks → read_chunk<br/>→ save_note → save_questions"| Notes[("note 表")]
+    Notes --> S5b["S5b · KG 抽取<br/>(structured output)"]
+    S5b -->|"Claude Sonnet 4.6<br/>+ Pydantic Schema"| KG[("kg_node + kg_edge 表")]
+    KG --> Viewer["Viewer<br/>vis-network + KaTeX"]
+    Notes --> Viewer
+
+    style S5a fill:#FFF4E5,stroke:#D97706
+    style S5b fill:#E0F2FE,stroke:#0284C7
+    style KG fill:#DCFCE7,stroke:#16A34A
+```
+
+- **人工标注边界**(S2 / S4):用户用 5 秒标章节页范围,代替全自动 agent 在 OCR-烂书上易飘移的章节切分
+- **LangGraph agent harness**(S5a):StateGraph `agent ↔ tool_node` 循环驱动笔记生成
+- **KG 强契约抽取**(S5b):Pydantic Schema × `with_structured_output()` × 服务端二次校验
+
+---
+
 ## 它能做什么
 
-- 📚 **上传 PDF**:你的教材本地保存(不入 git)
-- 🗂 **抽目录**:你选目录所在页,LLM 一发抽出全书章节结构
-- 📑 **章节 OCR**:你选某节内容页,视觉 LLM 把扫描页 OCR 成 markdown
-- 📝 **生成笔记**:LLM 按内容生成 markdown 学习笔记(支持 LaTeX 公式)
-- 🕸 **构建知识图谱**:从笔记抽出 concepts + relations,vis-network 可视化
-- 📥 **导出 Notes**:一键下载 zip(一节一 `.md`,Obsidian / Typora 友好)
+- **上传 PDF**:你的教材本地保存(不入 git)
+- **抽目录**:你选目录所在页,LLM 一发抽出全书章节结构
+- **章节 OCR**:你选某节内容页,视觉 LLM 把扫描页 OCR 成 markdown
+- **生成笔记**:LLM 按内容生成 markdown 学习笔记(支持 LaTeX 公式)
+- **构建知识图谱**:从笔记抽出 concepts + relations,vis-network 可视化
+- **导出 Notes**:一键下载 zip(一节一 `.md`,Obsidian / Typora 友好)
 
 每一步都在网页里点;终端只为安装。
 
@@ -34,7 +60,7 @@ clone 下来,装依赖,跑起来,在浏览器里上传 PDF → 标章节 → 一
 - `ANTHROPIC_API_KEY` —— [获取](https://console.anthropic.com/)
 - `GOOGLE_API_KEY` —— [获取](https://aistudio.google.com/app/apikey)
 
-> ⚠️ **API key 用于按 token 计费的 API 调用,与各家的网页/桌面聊天订阅产品(若有)完全无关**——后者覆盖不到 API。
+> **提示**:API key 用于**按 token 计费的 API 调用**,与各家的网页/桌面聊天订阅产品(若有)完全无关——后者覆盖不到 API。
 
 ---
 
