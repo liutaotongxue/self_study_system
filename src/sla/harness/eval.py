@@ -1,36 +1,37 @@
-"""Phase 1B-4:规则段 Eval。
+"""Phase 1B-4: rule-based Eval.
 
-rule_evaluate(run_id) → 跑 6 条 rule,落 EvalResult,返回 eval_result_id。
+rule_evaluate(run_id) -> runs 6 rules, persists an EvalResult, returns eval_result_id.
 
-设计要点:
-  - 数据源全部从 v4 表读:Run / Artifact / Note / Question / ToolResult
-    (不依赖 LangGraph 的 checkpoint;Phase 1B-2 的 sync_state_to_db 就是为这一步铺路)
-  - 每条 rule 产出 {rule, status('pass'/'fail'), actual, expected, suggestion?}
-  - rule_details JSON 存 {"checks": [...rule records...]}
+Design notes:
+  - Data source is entirely v4 tables: Run / Artifact / Note / Question / ToolResult
+    (does not rely on LangGraph's checkpoint; Phase 1B-2's sync_state_to_db paves the way for this)
+  - Each rule produces {rule, status('pass'/'fail'), actual, expected, suggestion?}
+  - rule_details JSON stores {"checks": [...rule records...]}
   - rule_passed = all(status == 'pass')
-  - 失败 rule 的 suggestion 字段措辞**面向 Claude**——Phase 2 可直接作为反馈回注
+  - The suggestion field on failing rules is phrased **for Claude** -- Phase 2 can feed it back directly
 
-不幂等:同一 run 多次评估,每次新建 EvalResult 行(便于跨时间对比阈值调整效果)。
+Not idempotent: evaluating the same run multiple times creates a new EvalResult row each time
+(useful for comparing threshold-tuning effects over time).
 """
 from sla.db import SessionLocal
 from sla.models.domain import Note, Question
 from sla.models.runtime import Artifact, EvalResult, Run, Step, ToolCall, ToolResult
 
 
-# --------------------- rule thresholds (集中放,方便调) ---------------------
+# --------------------- rule thresholds (centralized for easy tuning) ---------------------
 NOTE_MIN_LEN = 800
 Q_MIN, Q_MAX = 3, 5
 
 
 def rule_evaluate(run_id: int) -> int:
-    """对一个 Run 跑全部 rule,落 EvalResult 表,返回 eval_result.id。"""
+    """Run all rules against one Run, persist into the EvalResult table, return eval_result.id."""
     db = SessionLocal()
     try:
         run = db.get(Run, run_id)
         if run is None:
             raise ValueError(f"Run {run_id} not found")
 
-        # ---------- 收集数据 ----------
+        # ---------- Collect data ----------
         artifacts = db.query(Artifact).filter(Artifact.run_id == run_id).all()
         note_refs = [a.ref_id for a in artifacts if a.kind == "note"]
         q_refs = [a.ref_id for a in artifacts if a.kind == "question"]
@@ -48,7 +49,7 @@ def rule_evaluate(run_id: int) -> int:
             .all()
         )
 
-        # ---------- 跑 rule ----------
+        # ---------- Run rules ----------
         checks: list[dict] = []
         checks.append(_check_run_status(run))
         checks.append(_check_note_count(notes))
@@ -59,13 +60,13 @@ def rule_evaluate(run_id: int) -> int:
             checks.append(_check_questions_well_formed(questions))
         checks.append(_check_all_tools_ok(tool_results))
 
-        # ---------- 汇总写表 ----------
+        # ---------- Aggregate and write ----------
         rule_passed = all(c["status"] == "pass" for c in checks)
         evr = EvalResult(
             run_id=run_id,
             rule_passed=rule_passed,
             rule_details={"checks": checks},
-            llm_score=None,         # Phase 1B-6 LLM judge 填
+            llm_score=None,         # Filled by Phase 1B-6 LLM judge
             llm_rationale=None,
         )
         db.add(evr)
@@ -77,25 +78,25 @@ def rule_evaluate(run_id: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 各 rule 实现:返回统一 dict 结构
+# Per-rule implementations: return a unified dict structure
 #
-# 约定:
+# Convention:
 #   {
 #     "rule":   "rule_name",
 #     "status": "pass" | "fail",
 #     "actual": ...,
-#     ...各 rule 自己的字段...,
-#     "suggestion": "面向 Claude 的可执行建议"或 None
+#     ...rule-specific fields...,
+#     "suggestion": "actionable advice phrased for Claude" or None
 #   }
 #
-# suggestion 字段措辞要让 Claude 看得懂——Phase 2 会把失败 rule 的 suggestion
-# 喂回 agent 做自我纠错,所以语义要清楚、动作要可执行。
+# The suggestion field must be Claude-readable -- Phase 2 will feed the suggestion for failing
+# rules back to the agent for self-correction, so the wording must be clear and the action executable.
 # --------------------------------------------------------------------------- #
 
 def _check_run_status(run: Run) -> dict:
     ok = run.status == "completed"
 
-    # 按 status 分类给 suggestion。用描述性措辞,不用 'retry' 这种 agent 做不到的动词。
+    # Branch suggestions by status. Use descriptive wording; avoid verbs like 'retry' that the agent cannot act on.
     if ok:
         suggestion = None
     elif run.status == "policy_halted":

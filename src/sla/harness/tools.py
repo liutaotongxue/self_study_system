@@ -1,10 +1,10 @@
-"""LangGraph harness 的工具集:agent 通过这 4 个工具读 chunks、产出 note/question。
+"""LangGraph harness toolset: the agent uses these 4 tools to read chunks and produce notes/questions.
 
-每个函数都用 @tool 装饰。装饰后:
-  - 函数的 docstring 会作为 tool description 发给 Claude,所以 docstring 要写清
-    "什么时候用、参数是什么、返回什么"(给 Claude 看,不是给 Python 读者看)。
-  - 函数签名的 type hints 会被自动推导成 JSON Schema,Claude 据此构造 args。
-  - 调用方式从 fn(x) 变成 fn.invoke({"x": ...})。
+Each function is decorated with @tool. After decoration:
+  - The function's docstring is sent to Claude as the tool description, so it must clearly state
+    "when to use it, what the args are, what it returns" (written for Claude to read, not Python readers).
+  - The function signature's type hints are auto-derived into JSON Schema; Claude uses that to construct args.
+  - Call form changes from fn(x) to fn.invoke({"x": ...}).
 """
 import json
 from typing import Annotated
@@ -17,17 +17,17 @@ from sla.models.domain import Chunk, Document, Note, Question
 from sla.parsing.pdf import extract_pages
 
 
-# Type alias:document_id 是 InjectedToolArg —— Claude 看不到 schema 里这个字段,
-# 由 policy_aware_tool_node 在调用工具前从 state["document_id"] 注入。
-# None 表示"不按 document 过滤",保持向后兼容(fixture / 单文档场景)。
+# Type alias: document_id is an InjectedToolArg -- Claude does not see this field in the schema;
+# it is injected by policy_aware_tool_node from state["document_id"] before invoking the tool.
+# None means "do not filter by document", preserving backward compatibility (fixture / single-document scenarios).
 InjectedDocumentId = Annotated[int | None, InjectedToolArg]
 
 
 def _parse_if_json_string(v):
-    """防御性 parse:Claude 偶尔会把嵌套结构序列化成 JSON 字符串发过来,
-    BeforeValidator 在 pydantic 校验前先把字符串还原成 list。如果 Claude
-    生成的 JSON 本身有 bug,这里会抛 JSONDecodeError —— 不算 BeforeValidator
-    的锅,真正的修法是让 schema 里有明确的嵌套结构(见 QuestionItem)。"""
+    """Defensive parse: Claude occasionally serializes a nested structure into a JSON string;
+    BeforeValidator restores the string into a list before pydantic validation. If Claude's
+    generated JSON itself has a bug, this raises JSONDecodeError -- that is not BeforeValidator's
+    fault; the real fix is to make the schema explicit about nested structures (see QuestionItem)."""
     if isinstance(v, str):
         return json.loads(v)
     return v
@@ -59,7 +59,7 @@ def list_chunks(chapter_id: str, document_id: InjectedDocumentId = None) -> str:
     db = SessionLocal()
     try:
         q = db.query(Chunk).filter(Chunk.chapter_id == chapter_id)
-        # document_id 由 policy_aware_tool_node 从 state 注入,过滤跨文档同 chapter_id 的混淆
+        # document_id is injected from state by policy_aware_tool_node; filters out cross-document chapter_id collisions
         if document_id is not None:
             q = q.filter(Chunk.document_id == document_id)
         chunks = q.order_by(Chunk.id).all()
@@ -86,7 +86,7 @@ def read_chunk(chunk_id: int) -> str:
     """
     db = SessionLocal()
     try:
-        # db.get(Cls, pk) 是 SQLAlchemy 2.0 主键查询的推荐写法
+        # db.get(Cls, pk) is the SQLAlchemy 2.0 recommended form for primary-key lookup
         chunk = db.get(Chunk, chunk_id)
         if chunk is None:
             return f"(chunk {chunk_id} not found)"
@@ -111,8 +111,8 @@ def save_note(
     """
     db = SessionLocal()
     try:
-        # 解析 document_id:若 InjectedToolArg 给了就直接用(多文档场景准确),
-        # 否则反查(单文档/向后兼容 fixture 场景)
+        # Resolve document_id: use InjectedToolArg when provided (accurate for multi-document scenarios),
+        # otherwise reverse-lookup (single-document / backward-compatible fixture scenarios)
         if document_id is not None:
             doc_id = document_id
         else:
@@ -132,9 +132,9 @@ def save_note(
         )
         db.add(note)
         db.commit()
-        # commit 后显式 refresh,确保 note.id 已填回
+        # Explicit refresh after commit, ensuring note.id is populated
         db.refresh(note)
-        # 返回 JSON:上层(policy_aware_tool_node)解析 note_id 写 Artifact 行
+        # Return JSON: upstream (policy_aware_tool_node) parses note_id and writes the Artifact row
         return json.dumps({"ok": True, "note_id": note.id}, ensure_ascii=False)
     finally:
         db.close()
@@ -159,7 +159,7 @@ def save_questions(
     """
     db = SessionLocal()
     try:
-        # 同 save_note: document_id 优先,缺时反查
+        # Same as save_note: document_id wins, reverse-lookup when absent
         if document_id is not None:
             doc_id = document_id
         else:
@@ -172,35 +172,36 @@ def save_questions(
                 return json.dumps({"ok": False, "error": f"chapter {chapter_id} not found"})
             doc_id = any_chunk.document_id
 
-        # 一次性 add 多条,只 commit 一次:更快,且语义上"这一批题"作为整体
+        # Add all rows then commit once: faster, and semantically "this batch of questions" as one unit
         saved_qs: list[Question] = []
         for it in items:
             q = Question(
                 document_id=doc_id,
                 chapter_id=chapter_id,
-                # items 是 list[QuestionItem],按属性访问;BeforeValidator 兜住 str 输入
+                # items is list[QuestionItem], access by attribute; BeforeValidator catches str input
                 content=it.content,
                 difficulty=it.difficulty,
-                # tags 字段是 JSON 类型,直接传 Python list,SQLAlchemy 自动序列化
+                # tags column is JSON type; pass a Python list directly and SQLAlchemy serializes
                 tags=it.tags,
-                # source 默认 "agent"、status 默认 "unattempted",不显式赋值
+                # source defaults to "agent", status defaults to "unattempted"; do not set explicitly
             )
             db.add(q)
             saved_qs.append(q)
-        # 先 flush:让 SQLAlchemy 把自增 id 填回 q 对象。commit 也会 flush,但
-        # commit 之后默认会 expire 这些 instance,再读 q.id 会触发 N 次 refresh 查询
+        # Flush first: SQLAlchemy fills back the autoincrement id on each q. commit also flushes, but
+        # commit's default expire-on-commit invalidates these instances, so reading q.id triggers N refresh queries
         db.flush()
         question_ids = [q.id for q in saved_qs]
         db.commit()
-        # 返回 JSON:上层(policy_aware_tool_node)解析 question_ids 写 Artifact 行
+        # Return JSON: upstream (policy_aware_tool_node) parses question_ids and writes Artifact rows
         return json.dumps({"ok": True, "question_ids": question_ids}, ensure_ascii=False)
     finally:
         db.close()
 
 
 # --------------------------------------------------------------------------- #
-# 1b:结构抽取 subagent 工具集(独立于 ALL_TOOLS;save_note 等对它从模型 schema
-# 真缺席 —— build_graph(tools=) 只 bind 这 3 个,不是 runtime 才拦)
+# 1b: structure-extraction subagent toolset (independent of ALL_TOOLS; save_note etc.
+# are truly absent from its model schema -- build_graph(tools=) only binds these 3,
+# rather than blocking at runtime)
 # --------------------------------------------------------------------------- #
 
 @tool
@@ -218,7 +219,7 @@ def read_page_range(start: int, end: int, document_id: InjectedDocumentId = None
         fp = doc.file_path
     finally:
         db.close()
-    # 每次重抽 O(总页);max_steps 有界故先不缓存(优化属后续,刻意不提前抽象)
+    # Re-extract O(total pages) every call; max_steps is bounded so no caching yet (deliberate, optimize later)
     pages = extract_pages(fp)
     sel = [p for p in pages if start <= p.pdf_page <= end]
     if not sel:
@@ -281,9 +282,9 @@ def propose_structure(
     return json.dumps({"ok": True, "n": n}, ensure_ascii=False)
 
 
-# 方便其他模块统一导入:from sla.harness.tools import ALL_TOOLS
+# Convenience import for other modules: from sla.harness.tools import ALL_TOOLS
 ALL_TOOLS = [list_chunks, read_chunk, save_note, save_questions]
 STRUCTURE_TOOLS = [read_page_range, probe_body, propose_structure]
-# name → tool 对象:bind(graph.build_graph) 与 dispatch(policy_aware_tool_node)
-# 的单一真源,杜绝 schema-bind 与 runtime-白名单再分叉
+# name -> tool object: single source of truth for bind (graph.build_graph) and dispatch
+# (policy_aware_tool_node), preventing the schema-bind and runtime-whitelist from forking
 TOOL_REGISTRY = {t.name: t for t in ALL_TOOLS + STRUCTURE_TOOLS}

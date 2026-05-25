@@ -1,19 +1,19 @@
-"""Phase 1B-2:Task → Run 端到端执行入口。
+"""Phase 1B-2: end-to-end Task -> Run execution entry point.
 
 run_task(task_id) -> run_id:
-  1. 读 Task → 构 Policy → 创建 Run(status='running', started_at=now)
-  2. graph.stream 跑任务,每个 chunk 翻译成 Step / ToolCall / ToolResult 行
-     - agent 节点 → 1 行 Step + N 行 ToolCall (按 AIMessage.tool_calls)
-     - tools 节点 → 给每个 ToolMessage 写 1 行 ToolResult (按 tool_call_id 链回)
-  3. policy_aware_tool_node 在 save_note / save_questions 成功后自己写 Artifact
-     (不在这里管,见 policy.py)
-  4. 异常分类:
-     - GraphRecursionError → status='policy_halted'
-     - 其他异常 → status='failed' (含 traceback)
-     - 正常完成 → status='completed'  (v4 约定的字符串,不是 'succeeded')
-  5. 写 Run.ended_at + Run.error,事务关闭
+  1. Load Task -> build Policy -> create Run(status='running', started_at=now)
+  2. graph.stream runs the task; each chunk is translated into Step / ToolCall / ToolResult rows
+     - agent node -> 1 Step row + N ToolCall rows (one per AIMessage.tool_calls)
+     - tools node -> 1 ToolResult row per ToolMessage (linked via tool_call_id)
+  3. policy_aware_tool_node writes Artifact rows itself when save_note / save_questions succeed
+     (not handled here; see policy.py)
+  4. Exception classification:
+     - GraphRecursionError -> status='policy_halted'
+     - Other exceptions -> status='failed' (includes traceback)
+     - Normal completion -> status='completed'  (v4-agreed string, not 'succeeded')
+  5. Write Run.ended_at + Run.error, close the transaction
 
-不幂等:每次跑创建新 Run 行(同 Task 多次 run 是合法的)。
+Not idempotent: each run creates a new Run row (running the same Task multiple times is legal).
 """
 import json
 import traceback
@@ -36,8 +36,9 @@ from sla.models.runtime import Artifact, Run, Step, Task, ToolCall, ToolResult
 
 
 def _build_outline(document_id: int) -> str | None:
-    """S5:全书大纲文本(含 3+ 级,info-complete)。供学习 agent 定位本章在全书
-    的位置。无 DS 行(legacy doc / 新书未标目录)返 None;调用方据此不注入。
+    """S5: full-book outline text (includes 3+ levels, info-complete). Helps the learning agent
+    locate the current chapter within the book. Returns None when there are no DS rows
+    (legacy doc / new book without TOC marked); the caller skips injection accordingly.
     """
     db = SessionLocal()
     try:
@@ -68,20 +69,20 @@ def _build_outline(document_id: int) -> str | None:
 
 
 def run_task(task_id: int) -> int:
-    """端到端跑一个 Task,返回 run_id。
+    """End-to-end execution of a Task; returns run_id.
 
-    调用方:
+    Caller:
       from sla.harness.runner import run_task
       run_id = run_task(task_id=1)
     """
-    # ---------- 加载 Task,创建 Run(status='running') ----------
+    # ---------- Load Task, create Run(status='running') ----------
     db = SessionLocal()
     try:
         task = db.get(Task, task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        # 反序列化 policy JSON → Policy 对象(字段名要和 Policy 类一致,seed_task.py 已对齐)
+        # Deserialize policy JSON -> Policy object (field names must match the Policy class; seed_task.py already aligned)
         policy = Policy(**task.policy)
 
         run = Run(
@@ -94,13 +95,13 @@ def run_task(task_id: int) -> int:
         db.refresh(run)
         run_id = run.id
 
-        # 在 session 关闭前把 task 字段拷出来,后面 graph 用
+        # Copy task fields out before closing the session; graph uses them below
         system_prompt = task.system_prompt
         user_prompt = task.user_prompt
     finally:
         db.close()
 
-    # 在 session 关闭前再拷一个 task.document_id (上面已拷 system/user_prompt)
+    # Copy task.document_id before closing the session (system/user_prompt already copied above)
     db2 = SessionLocal()
     try:
         task = db2.get(Task, task_id)
@@ -108,15 +109,15 @@ def run_task(task_id: int) -> int:
     finally:
         db2.close()
 
-    # ---------- 构造初始 state ----------
-    # run_id 给 policy_aware_tool_node 写 Artifact 用
-    # document_id 给工具 InjectedToolArg 过滤跨文档同 chapter_id 用
-    # cache_control 启用 Anthropic prompt caching(每轮重发 system + tools 时命中)
-    # S5:全书大纲作为第二条 SystemMessage 注入(plain text portable form,
-    # per [[provider-portability-preference]] —— 用可移植 LangChain 抽象,不
-    # 深耕 Anthropic-native multi-block cache_control;第一条 system 保留原
-    # 形态以免扩 S5 scope)。无 DS 行(legacy doc / 未标目录)→ outline_text
-    # 为 None 不注入(legacy 零回归)。
+    # ---------- Build initial state ----------
+    # run_id is for policy_aware_tool_node to write Artifact rows
+    # document_id is for the tools' InjectedToolArg, filtering cross-document same chapter_id
+    # cache_control enables Anthropic prompt caching (hits when system + tools are resent each turn)
+    # S5: full-book outline injected as a second SystemMessage (plain text portable form,
+    # per [[provider-portability-preference]] -- use portable LangChain abstractions, do not
+    # deepen Anthropic-native multi-block cache_control; the first system keeps its original
+    # form to avoid expanding S5 scope). No DS rows (legacy doc / TOC not marked) -> outline_text
+    # is None and is not injected (legacy zero regression).
     outline_text = _build_outline(task_document_id) if task_document_id else None
     initial = {
         "messages": [
@@ -134,14 +135,14 @@ def run_task(task_id: int) -> int:
         "document_id": task_document_id,
     }
 
-    # ---------- 跑 graph,翻译 stream → Step/ToolCall/ToolResult ----------
-    # Weld A:bind 集 = policy.allowed_tools(单一真源,schema 随白名单)。
-    # 现学习 Task seed allowed_tools 恰 4 → 解析回原 ALL_TOOLS → 字节同 bind;
-    # 这是 runner 路径语义位移(非 no-op),回归冒烟须断言学习任务仍恰 4 工具。
-    # terminal_tool:仅结构任务(allowed_tools 含 propose_structure)结构性终止;
-    # 硬兜底仍是下方 _stream_and_persist 的 recursion_limit=max_steps*2。
-    # max_tokens:policy.max_tokens or 4096 —— 学习任务无此键→None→4096(字节零回归);
-    # 结构任务须高(propose_structure 一次吐 ~80 节,4096 会截断 tool 调用→空 args 死循环)
+    # ---------- Run graph, translate stream -> Step/ToolCall/ToolResult ----------
+    # Weld A: bind set = policy.allowed_tools (single source of truth, schema follows whitelist).
+    # Current learning Task seed allowed_tools is exactly 4 -> resolves back to original ALL_TOOLS -> byte-identical bind;
+    # this is a runner-path semantic shift (not a no-op); regression smoke must assert learning tasks still have exactly 4 tools.
+    # terminal_tool: only structure tasks (allowed_tools contains propose_structure) terminate structurally;
+    # hard backstop is still the _stream_and_persist recursion_limit=max_steps*2 below.
+    # max_tokens: policy.max_tokens or 4096 -- learning task has no such key -> None -> 4096 (byte-identical zero regression);
+    # structure task must set it high (propose_structure outputs ~80 sections at once; 4096 truncates the tool call -> empty args infinite loop)
     graph = build_graph(
         max_tokens=(policy.max_tokens or 4096),
         tools=[TOOL_REGISTRY[n] for n in policy.allowed_tools],
@@ -157,7 +158,7 @@ def run_task(task_id: int) -> int:
     try:
         _stream_and_persist(graph, initial, run_id, policy)
     except GraphRecursionError as e:
-        # max_steps 超限被 LangGraph 中断
+        # max_steps exceeded, interrupted by LangGraph
         status = "policy_halted"
         error_text = f"GraphRecursionError (max_steps={policy.max_steps} exceeded): {e}"
     except Exception as e:
@@ -179,20 +180,20 @@ def run_task(task_id: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# 内部:stream → Step/ToolCall/ToolResult 翻译
+# Internal: stream -> Step/ToolCall/ToolResult translation
 # --------------------------------------------------------------------------- #
 
 def _stream_and_persist(graph, initial_state: dict, run_id: int, policy: Policy):
-    """跑 graph.stream,把每个 chunk 翻译成 Step/ToolCall/ToolResult 行。
+    """Run graph.stream and translate each chunk into Step/ToolCall/ToolResult rows.
 
-    设计:
-      - 每个 agent 节点 update → 1 行 Step (idx 递增) + N 行 ToolCall
-      - 每个 tools 节点 update → 给每个 ToolMessage 写 1 行 ToolResult
-      - pending_tool_calls 字典:从 anthropic_tool_use_id 找回 ToolCall.id
-        (因为 ToolMessage 用 tool_call_id 链回,而 DB ToolResult 用 ToolCall.id)
+    Design:
+      - Each agent node update -> 1 Step row (idx incremented) + N ToolCall rows
+      - Each tools node update -> 1 ToolResult row per ToolMessage
+      - pending_tool_calls dict: look up ToolCall.id from anthropic_tool_use_id
+        (because ToolMessage links via tool_call_id, while DB ToolResult uses ToolCall.id)
     """
     step_idx = 0
-    pending_tool_calls: dict[str, int] = {}  # anthropic_tool_use_id → ToolCall.id
+    pending_tool_calls: dict[str, int] = {}  # anthropic_tool_use_id -> ToolCall.id
 
     db = SessionLocal()
     try:
@@ -222,7 +223,7 @@ def _persist_agent_step(
     msgs: list,
     pending_tool_calls: dict[str, int],
 ):
-    """写 1 行 Step + N 行 ToolCall。"""
+    """Write 1 Step row + N ToolCall rows."""
     ai_msg = next((m for m in msgs if isinstance(m, AIMessage)), None)
     if ai_msg is None:
         return
@@ -230,13 +231,13 @@ def _persist_agent_step(
     step = Step(
         run_id=run_id,
         idx=step_idx,
-        # Phase 1B-2 暂不持久化 model_input/output(冗余 + 数据量大)。
-        # 真要看每步 messages,可以读 ToolCall + ToolResult 链回构;Phase 2 再评估
+        # Phase 1B-2 does not yet persist model_input/output (redundant + data size large).
+        # To actually inspect per-step messages, read the ToolCall + ToolResult chain; revisit in Phase 2
         model_input=None,
         model_output=None,
     )
     db.add(step)
-    db.flush()  # 拿到 step.id 用于 ToolCall.step_id
+    db.flush()  # Obtain step.id for ToolCall.step_id
 
     for tc in ai_msg.tool_calls or []:
         tc_row = ToolCall(
@@ -248,9 +249,9 @@ def _persist_agent_step(
         db.add(tc_row)
         db.flush()
         pending_tool_calls[tc["id"]] = tc_row.id
-        # 注:verbatim 提议就在 tc_row.input(= tc["args"]),此处逐字捕获、单写者。
-        # structure_proposal 指针 Artifact 不在此写 —— 见 _persist_tool_results
-        # (须等 ToolResult status=ok 才知是否成功,call 时还不知 → 移到那)。
+        # Note: the verbatim proposal lives in tc_row.input (= tc["args"]); captured here verbatim, single writer.
+        # The structure_proposal pointer Artifact is NOT written here -- see _persist_tool_results
+        # (we need ToolResult status=ok to know success; not yet known at call time -> moved to that path).
 
     db.commit()
 
@@ -258,17 +259,17 @@ def _persist_agent_step(
 def _persist_tool_results(
     db, run_id: int, msgs: list, pending_tool_calls: dict[str, int]
 ):
-    """给每个 ToolMessage 写 1 行 ToolResult;并在 propose_structure 成功时
-    写【唯一】structure_proposal 指针 Artifact(success-gated,见下)。"""
+    """Write 1 ToolResult row per ToolMessage; and on a successful propose_structure call,
+    write the [unique] structure_proposal pointer Artifact (success-gated, see below)."""
     for tm in msgs:
         if not isinstance(tm, ToolMessage):
             continue
 
         tc_id = pending_tool_calls.pop(tm.tool_call_id, None)
         if tc_id is None:
-            # 不应该发生:每个 ToolMessage 都该对应上一步 agent 创建的 ToolCall。
-            # 真出现说明 langgraph 版本/我们的逻辑有 bug,先 silent skip,以免一行
-            # 异常炸掉整个 Run
+            # Should not happen: every ToolMessage must correspond to a ToolCall created in the prior agent step.
+            # If it does occur, the langgraph version / our logic has a bug; silently skip for now so a single
+            # anomaly does not blow up the whole Run
             continue
 
         content_str = str(tm.content)
@@ -283,8 +284,8 @@ def _persist_tool_results(
         else:
             status_val = "ok"
             reason = None
-            # content 是 JSON 列。tool 返回可能是 plain text 或 JSON 字符串,
-            # parse 成功存 dict/list,失败保留原 str
+            # content is a JSON column. Tool return may be plain text or a JSON string;
+            # on parse success store dict/list, on failure keep the raw str
             try:
                 content_val = json.loads(content_str)
             except (json.JSONDecodeError, TypeError):
@@ -297,11 +298,11 @@ def _persist_tool_results(
             reason=reason,
         ))
 
-        # fork1=(a) 修正(test-surfaced):structure_proposal 指针 Artifact 写在
-        # 【此处】—— 只在 propose_structure【成功】时写,绑 success+单交付
-        # (terminal_tool→END 保证成功后即终止 → 全 Run 恰一条)。verbatim 提议
-        # 仍由 _persist_agent_step 的 ToolCall.input 逐字捕获(未变);1c 按
-        # Artifact.ref_id 取该 ToolCall.input 逐字读(同 chapter_detect:188 纪律)。
+        # fork1=(a) fix (test-surfaced): the structure_proposal pointer Artifact is written
+        # [here] -- only when propose_structure [succeeds], coupling success + single delivery
+        # (terminal_tool -> END guarantees termination right after success -> exactly one per Run). The verbatim proposal
+        # is still captured verbatim by _persist_agent_step's ToolCall.input (unchanged); 1c reads
+        # that ToolCall.input verbatim via Artifact.ref_id (same discipline as chapter_detect:188).
         if status_val == "ok":
             tc_row = db.get(ToolCall, tc_id)
             if tc_row is not None and tc_row.name == "propose_structure":

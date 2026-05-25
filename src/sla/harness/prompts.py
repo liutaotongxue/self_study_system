@@ -1,4 +1,4 @@
-"""Agent 系统提示词。集中存放方便单独调整。"""
+"""Agent system prompts. Centralized for easier tuning."""
 
 LEARNING_AGENT_SYSTEM = """你是一名学习助理。任务是阅读 chapter_id 对应章节,产出一份 Markdown 学习笔记 + 3-5 道开放性思考题。
 

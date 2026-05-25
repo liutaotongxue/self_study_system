@@ -1,17 +1,17 @@
-"""KG 抽取(Phase 2-W3-4)—— 从单个 Note 抽出 concepts + relations。
+"""KG extraction (Phase 2-W3-4) -- extract concepts + relations from a single Note.
 
-**架构**:独立 service,不走 run_task pipeline。理由:
-  - 单轮 LLM 调用,无多轮决策需求
-  - run_task 的 Step/ToolCall trace + rule_evaluate 对 KG 抽取没意义
-  - 直接 ChatAnthropic.with_structured_output(KGExtraction) 拿到 Pydantic 对象
+**Architecture**: standalone service, does not go through the run_task pipeline. Rationale:
+  - Single-turn LLM call, no multi-turn decision-making needed
+  - run_task's Step/ToolCall trace + rule_evaluate are meaningless for KG extraction
+  - Use ChatAnthropic.with_structured_output(KGExtraction) directly to get Pydantic objects
 
-**LLM 输出契约**:
-  - concepts: list[{label, type ∈ {concept,method,example}, description}]
-  - relations: list[{source_label, target_label, type ∈ {requires,related_to,contrasts_with,example_of}, notes?}]
-  - **LLM 只给 label**,服务端用 slugify 生成 external_id(避免 LLM 在 slug 级别不一致)
+**LLM output contract**:
+  - concepts: list[{label, type in {concept,method,example}, description}]
+  - relations: list[{source_label, target_label, type in {requires,related_to,contrasts_with,example_of}, notes?}]
+  - **LLM only provides label**; server uses slugify to generate external_id (avoids LLM inconsistency at slug level)
 
-**Context window**:抽某 Note 时,可选喂"已有 concepts label 列表"作为 dedup hint,
-limit 到最近 30 个 label,防 prompt token 爆。
+**Context window**: when extracting a Note, optionally feed "existing concepts label list" as dedup hint,
+limited to most recent 30 labels to prevent prompt token blow-up.
 """
 import json
 import re
@@ -37,11 +37,12 @@ RelationType = Literal["requires", "related_to", "contrasts_with", "example_of"]
 # --------------------------------------------------------------------------- #
 
 def _parse_if_json_string(v):
-    """Phase 1B-1 同款防御 + LLM 尾垃圾容忍(实测 ch3.10 rebuild job2:
-    合法 array 后多吐 '[\\n]'(=[])致 json.loads "Extra data" → build_kg rc=1)。
-    严格失败 → raw_decode 取首个完整 JSON 值;尾守卫:仅当尾随【非空】
-    list/dict(真·第二个有内容值)才 re-raise 保 loud 不静默丢抽取数据;
-    空 []/{}/非JSON 垃圾 → 忽略。well-formed 路径零改动。"""
+    """Same defense as Phase 1B-1 + tolerance for LLM trailing garbage (observed on ch3.10 rebuild job2:
+    after a valid array, an extra '[\\n]' (=[]) caused json.loads "Extra data" -> build_kg rc=1).
+    Strict failure -> raw_decode takes the first complete JSON value; tail guard: only re-raise when
+    the trailing value is a **non-empty** list/dict (a real second value with content), keeping it loud
+    instead of silently dropping extracted data; empty []/{}/non-JSON garbage -> ignore.
+    Well-formed path is unchanged."""
     if isinstance(v, str):
         try:
             return json.loads(v)
@@ -54,13 +55,13 @@ def _parse_if_json_string(v):
                 except json.JSONDecodeError:
                     t = None
                 if isinstance(t, (list, dict)) and len(t) > 0:
-                    raise   # 尾随非空第二值:保持 loud,不静默丢数据
+                    raise   # trailing non-empty second value: stay loud, do not silently drop data
             return obj
     return v
 
 
 class ConceptItem(BaseModel):
-    """LLM 输出的单个概念。"""
+    """A single concept emitted by the LLM."""
     label: str = Field(
         description="人类可读的名称,**与教材原文语言一致**(英文教材出英文 label,"
         "中文教材出中文 label),2-4 个词,直接复用源文本术语。"
@@ -78,7 +79,7 @@ class ConceptItem(BaseModel):
 
 
 class RelationItem(BaseModel):
-    """LLM 输出的单个关系。"""
+    """A single relation emitted by the LLM."""
     source_label: str = Field(description="边的起点 label,**必须**出现在 concepts 列表里")
     target_label: str = Field(description="边的终点 label,**必须**出现在 concepts 列表里")
     type: RelationType = Field(
@@ -92,7 +93,7 @@ class RelationItem(BaseModel):
 
 
 class KGExtraction(BaseModel):
-    """LLM 总输出结构。"""
+    """Top-level LLM output structure."""
     concepts: Annotated[
         list[ConceptItem], BeforeValidator(_parse_if_json_string)
     ] = Field(description="本 Note 抽出的 5-10 个 concepts/methods/examples")
@@ -102,29 +103,30 @@ class KGExtraction(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# 服务端工具:slug + external_id
+# Server-side helpers: slug + external_id
 # --------------------------------------------------------------------------- #
 
 _ARTICLE_RE = re.compile(r"\b(?:the|a|an)\b", flags=re.IGNORECASE)
 
 
 def _singularize_word(word: str) -> str:
-    """轻量英文单数化:覆盖最常见复数模式,不追求完美。
-    **非 ASCII 词(如中文 '策略' / '价值函数')直接原样返回**——
-    其他语言无英文复数概念,套规则反而误伤(2026-05-21 多语言 KG 修)。
+    """Lightweight English singularization: covers most common plural patterns, not exhaustive.
+    **Non-ASCII words (e.g. Chinese '策略' / '价值函数') are returned as-is** --
+    other languages have no English plural concept; applying rules causes false strips
+    (2026-05-21 multilingual KG fix).
 
-    英文规则:
-      - 长度 ≤ 3:不动(避免短词误伤,如 'is', 'as')
-      - 'ies' 结尾且 len > 4:替 'y'(policies → policy)
-      - 'sses' 结尾:去 'es'(processes → process)
-      - 'ss' 结尾:不动(process, class —— 已是单数)
-      - 's' 结尾:去 's'(values → value, actions → action)
-      - 其他:不动
+    English rules:
+      - length <= 3: leave alone (avoid short-word false strips like 'is', 'as')
+      - 'ies' ending and len > 4: replace with 'y' (policies -> policy)
+      - 'sses' ending: drop 'es' (processes -> process)
+      - 'ss' ending: leave alone (process, class -- already singular)
+      - 's' ending: drop 's' (values -> value, actions -> action)
+      - otherwise: leave alone
 
-    已知会误伤的:'axis' → 'axi', 'iris' → 'iri'。RL 域里不算高频,Phase 2+ 再调。
+    Known false strips: 'axis' -> 'axi', 'iris' -> 'iri'. Not frequent in the RL domain; revisit in Phase 2+.
     """
     if not word.isascii():
-        return word                       # 中文/CJK/其它非 ASCII:跳过单数化
+        return word                       # Chinese/CJK/other non-ASCII: skip singularization
     w = word.lower()
     if len(w) <= 3:
         return word
@@ -140,12 +142,12 @@ def _singularize_word(word: str) -> str:
 
 
 def parse_markdown_sections(md: str) -> list[tuple[str, str]]:
-    """把 Markdown 文本切成 [(heading, content), ...] 段。
+    """Split a Markdown text into [(heading, content), ...] segments.
 
-    一个 section = 一个 #/##/###/#### heading 行 + 后续直到下一个 heading 之间的所有内容。
-    没有 heading 之前的内容(preamble)忽略——Note 通常以 # 开头,无 preamble。
+    A section = one #/##/###/#### heading line + everything that follows up to the next heading.
+    Content before any heading (preamble) is ignored -- Notes usually start with # so there is no preamble.
 
-    例:
+    Example:
         '''
         # Ch1.3 Elements
         intro
@@ -154,9 +156,9 @@ def parse_markdown_sections(md: str) -> list[tuple[str, str]]:
         ## 2. Reward
         reward is ...
         '''
-        → [('Ch1.3 Elements', 'intro\\n'),
-           ('1. Policy', 'a policy is ...\\n'),
-           ('2. Reward', 'reward is ...\\n')]
+        -> [('Ch1.3 Elements', 'intro\\n'),
+            ('1. Policy', 'a policy is ...\\n'),
+            ('2. Reward', 'reward is ...\\n')]
     """
     sections: list[tuple[str, str]] = []
     cur_heading: str | None = None
@@ -176,42 +178,43 @@ def parse_markdown_sections(md: str) -> list[tuple[str, str]]:
 
 
 def slugify_heading(heading: str) -> str:
-    """Markdown heading → URL slug (GitHub-style)。**接受 raw 或已 strip 过 ## 的两种形式**。
+    """Markdown heading -> URL slug (GitHub-style). **Accepts both raw and already-stripped ## forms.**
 
-    例:
-      '## 2. Action-Value Methods'   → 'action-value-methods'
-      '2. Action-Value Methods'      → 'action-value-methods'  (parse_markdown_sections 给的形式)
-      '### Reward vs. Value'         → 'reward-vs-value'
-      'TD Update Rule (Eq. 2.4)'     → 'td-update-rule-eq-2-4'
-      '## 1.1 Reinforcement Learning'→ 'reinforcement-learning'
+    Examples:
+      '## 2. Action-Value Methods'   -> 'action-value-methods'
+      '2. Action-Value Methods'      -> 'action-value-methods'  (form produced by parse_markdown_sections)
+      '### Reward vs. Value'         -> 'reward-vs-value'
+      'TD Update Rule (Eq. 2.4)'     -> 'td-update-rule-eq-2-4'
+      '## 1.1 Reinforcement Learning'-> 'reinforcement-learning'
 
-    规则:
+    Rules:
       1. lowercase + strip
-      2. 去掉 leading markdown ## 前缀(如果还在)
-      3. 去掉 leading 数字编号(如 '1.', '2.3.')
-      4. 非 [a-z0-9] → hyphen,折叠,去首尾
-      5. 若结果为空(纯数字 heading),fallback 用原始字符串 hash
+      2. drop leading markdown ## prefix (if still present)
+      3. drop leading numeric prefix (e.g. '1.', '2.3.')
+      4. non [a-z0-9] -> hyphen, collapse, trim ends
+      5. if result is empty (purely numeric heading), fallback to a hash of the original string
     """
     s = heading.lower().strip()
-    s = re.sub(r"^#+\s+", "", s)            # 兼容 '## xxx' 形式
-    s = re.sub(r"^[\d.]+\s*", "", s)        # 去 leading '2.' / '1.1.'
+    s = re.sub(r"^#+\s+", "", s)            # accept '## xxx' form
+    s = re.sub(r"^[\d.]+\s*", "", s)        # drop leading '2.' / '1.1.'
     s = re.sub(r"[^a-z0-9]+", "-", s)
     s = s.strip("-")
     if not s:
-        # 纯数字 heading 等极端 case:fallback 用原 heading 简单 normalize
+        # Edge case (purely numeric heading): fallback to simple normalize of original heading
         s = re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-") or "unnamed"
     return s
 
 
 def slugify_headings(headings: list[str]) -> list[str]:
-    """对一组 heading 批量 slugify,collision 加 GitHub 同款 -2 / -3 后缀。
+    """Batch-slugify a group of headings; collisions get GitHub-style -2 / -3 suffixes.
 
-    单个 slugify_heading 没法识别"同一 Note 内 ε-Greedy vs Greedy" 这种 Unicode 差异
-    被吃掉后的 slug 撞车。批量入口可以见全局,在第二次出现时改名。
+    A single slugify_heading cannot detect collisions like "within one Note: epsilon-Greedy vs Greedy"
+    where Unicode differences get eaten and produce the same slug. The batch entry point has the
+    global view and can rename on the second occurrence.
 
-    例:
-      ['Greedy Action Selection', 'ε-Greedy Action Selection']
-      → ['greedy-action-selection', 'greedy-action-selection-2']
+    Example:
+      ['Greedy Action Selection', 'epsilon-Greedy Action Selection']
+      -> ['greedy-action-selection', 'greedy-action-selection-2']
     """
     seen: dict[str, int] = {}
     result: list[str] = []
@@ -224,41 +227,41 @@ def slugify_headings(headings: list[str]) -> list[str]:
 
 
 def slugify(label: str) -> str:
-    """label → slug:Phase 2-W3-4 升级版,**激进归一化以稳定去重**。
+    """label -> slug: Phase 2-W3-4 upgrade, **aggressive normalization for stable dedup**.
 
-    步骤:
+    Steps:
       1. lowercase + trim
-      2. 砍冠词 the/a/an (但**不**砍介词 of/in/on/at —— 后者承载语义)
-      3. 简单单数化(per-word)
-      4. 非 [a-z0-9] → hyphen,折叠,去首尾
+      2. drop articles the/a/an (but **not** prepositions of/in/on/at -- those carry semantics)
+      3. simple singularization (per-word)
+      4. non [a-z0-9] -> hyphen, collapse, trim ends
 
-    例:
-      'Markov Property'             → 'markov-property'
-      'Markov_Property'             → 'markov-property'
-      'value function'              → 'value-function'
-      'value functions'             → 'value-function'   (单数化)
-      'model of environment'        → 'model-of-environment'
-      'model of the environment'    → 'model-of-environment'  (砍 the,合并!)
-      'policies'                    → 'policy'           (ies → y)
-      'Q-Learning'                  → 'q-learning'
-      'process'                     → 'process'          (ss 结尾保留)
+    Examples:
+      'Markov Property'             -> 'markov-property'
+      'Markov_Property'             -> 'markov-property'
+      'value function'              -> 'value-function'
+      'value functions'             -> 'value-function'   (singularized)
+      'model of environment'        -> 'model-of-environment'
+      'model of the environment'    -> 'model-of-environment'  (drops 'the', merges!)
+      'policies'                    -> 'policy'           (ies -> y)
+      'Q-Learning'                  -> 'q-learning'
+      'process'                     -> 'process'          (ss ending preserved)
     """
     s = label.strip().lower()
-    # 砍冠词 (保留介词 of/in/on/at,语义性的)
+    # Drop articles (keep prepositions of/in/on/at -- they are semantic)
     s = _ARTICLE_RE.sub("", s)
-    # 单词级单数化(_singularize_word 内已跳过非 ASCII)
+    # Per-word singularization (_singularize_word already skips non-ASCII)
     words = [w for w in s.split() if w]
     words = [_singularize_word(w) for w in words]
     s = " ".join(words)
-    # 非 \w(letters/digits/_,Unicode-aware)→ hyphen。\w 在 Py3 默认含 CJK,
-    # 故中文 label '策略' / '价值函数' 不会被吃成空 slug(2026-05-21 多语言 KG 修)。
+    # Non-\w (letters/digits/_, Unicode-aware) -> hyphen. \w in Py3 includes CJK by default,
+    # so Chinese labels '策略' / '价值函数' will not collapse to empty slugs (2026-05-21 multilingual KG fix).
     s = re.sub(r"[^\w]+", "-", s)
     s = s.strip("-")
     return s
 
 
 def build_external_id(document_id: int, chapter_id: str, label: str) -> str:
-    """组装 external_id = '<doc_id>_<chap_id>_<slug>'。"""
+    """Build external_id = '<doc_id>_<chap_id>_<slug>'."""
     return f"{document_id}_{chapter_id}_{slugify(label)}"
 
 
@@ -347,12 +350,12 @@ USER_PROMPT_TEMPLATE = """**【最高优先级规则,在 system 规则之上】*
 
 
 def _detect_main_language(text: str) -> str:
-    """字符占比判 note 主语言。CJK > ASCII 字母 → 中文,反之 → 英文。
-    用于 USER_PROMPT 注入 deterministic 语言锁(防 LLM 在双语术语处英文 anchoring)。"""
+    """Detect a note's primary language by character ratio. CJK > ASCII letters -> Chinese, else English.
+    Used to inject a deterministic language lock into USER_PROMPT (prevents LLM English-anchoring on bilingual terms)."""
     cjk = sum(1 for c in text if "一" <= c <= "鿿")
     ascii_letters = sum(1 for c in text if c.isascii() and c.isalpha())
     if cjk == 0 and ascii_letters == 0:
-        return "中文"            # 兜底默认中文(我们多数测试样本是中文教材)
+        return "中文"            # Fallback default: Chinese (most of our test samples are Chinese textbooks)
     return "中文" if cjk > ascii_letters else "英文"
 
 
@@ -364,7 +367,7 @@ CONTEXT_BLOCK_TEMPLATE = """
 
 
 # --------------------------------------------------------------------------- #
-# 主入口
+# Main entry point
 # --------------------------------------------------------------------------- #
 
 def extract_kg_from_note(
@@ -375,18 +378,18 @@ def extract_kg_from_note(
     context_chapter_depth: int = 3,
     context_label_limit: int = 30,
 ) -> KGExtraction:
-    """对单个 Note 抽取 KG。返回 KGExtraction(还没落 DB —— W3-5 orchestrator 负责落)。
+    """Extract KG from a single Note. Returns KGExtraction (not yet persisted -- W3-5 orchestrator handles DB writes).
 
     Args:
-        note_id: 要处理的 Note.id
-        model_name: 用哪个 model(默认 sonnet,可换 haiku 省钱)
+        note_id: Note.id to process
+        model_name: which model to use (default sonnet; switch to haiku to save cost)
         max_tokens: LLM max_tokens
-        context_chapter_depth: 喂最近 N 章的现有 concepts 作为 dedup context;
-            0 = 不喂(纯净抽取,用于稳定性测试)
-        context_label_limit: context 里最多塞多少个 label(防 prompt token 爆)
+        context_chapter_depth: feed existing concepts from the most recent N chapters as dedup context;
+            0 = do not feed (clean extraction, used for stability tests)
+        context_label_limit: max number of labels to include in context (prevents prompt token blow-up)
 
     Returns:
-        KGExtraction(concepts + relations,Pydantic 校验过)
+        KGExtraction (concepts + relations, Pydantic-validated)
     """
     db = SessionLocal()
     try:
@@ -396,12 +399,12 @@ def extract_kg_from_note(
 
         context_block = ""
         if context_chapter_depth > 0:
-            # 取同 document 已有的 concept labels(按 id desc 拿最新的)
+            # Take existing concept labels from the same document (id desc for newest first)
             existing = (
                 db.query(KGNode)
                 .filter(KGNode.document_id == note.document_id)
                 .order_by(KGNode.id.desc())
-                .limit(context_label_limit * 3)  # 留 dedup 余量
+                .limit(context_label_limit * 3)  # extra headroom for dedup
                 .all()
             )
             seen: set[str] = set()
@@ -432,9 +435,9 @@ def extract_kg_from_note(
         api_key=settings.anthropic_api_key,
     )
     structured = model.with_structured_output(KGExtraction)
-    # cache_control 启用 Anthropic prompt caching:
-    # SYSTEM_PROMPT ~2000 tokens 是 KG 抽取的主要重复 input,
-    # 8 个 Note 顺序抽取(5 min 内),cache_creation 一次,后续 cache_read 0.1× 价
+    # cache_control enables Anthropic prompt caching:
+    # SYSTEM_PROMPT (~2000 tokens) is the main repeated input for KG extraction;
+    # 8 Notes extracted in sequence (within 5 min) -> one cache_creation, subsequent cache_read at 0.1x price
     result: KGExtraction = structured.invoke([
         SystemMessage(content=[{
             "type": "text",
@@ -444,35 +447,35 @@ def extract_kg_from_note(
         HumanMessage(content=user_prompt),
     ])
 
-    # 服务端二次校验:relation 的 source/target 必须在 concepts 里
+    # Second-pass server-side validation: each relation's source/target must appear in concepts
     valid_labels = {c.label for c in result.concepts}
     bad_relations = [
         r for r in result.relations
         if r.source_label not in valid_labels or r.target_label not in valid_labels
     ]
     if bad_relations:
-        # 不抛错,过滤掉(LLM 偶尔会引用不在 concepts 里的 label)。
-        # 在抽取层用静默 drop 比 retry 简单,W3-5 会把所有 drop 记录到 log。
+        # Do not raise; filter them out (the LLM occasionally references labels not in concepts).
+        # A silent drop at the extraction layer is simpler than retrying; W3-5 logs every drop.
         result.relations = [r for r in result.relations if r not in bad_relations]
-        # 留个埋点字段方便 caller 看(动态属性,Pydantic 模型上不强制 schema 化)
+        # Leave a marker field so the caller can see what was dropped (dynamic attr; not Pydantic-schema'd)
         result.__dict__["_dropped_relations"] = bad_relations
 
     return result
 
 
 # --------------------------------------------------------------------------- #
-# O4: note_ref_id 完整性 gate(SQLite id 复用错配防御;§30 O4)
+# O4: note_ref_id integrity gate (defense against SQLite id-reuse misalignment; section 30 O4)
 # --------------------------------------------------------------------------- #
 
-# label vs Note headings 最大 cosine ≥ 此值 = 该 Note 实质讲该 concept。
-# 依据 Phase 3-2 A1 实测 score 阶梯(≥0.725 全对 / ≤0.518 全错,中间灰)。0.55 偏严:
-# O4 宁可判 AMBIGUOUS 交人,也不误判 origin 去 auto-fix。**未在真实 violation 上标定前,
-# realign 的 apply 默认 False**(silent-drift 纪律;当前审计 0 violation 故无标定数据)。
+# Max cosine between label and Note headings >= this value = that Note substantively covers the concept.
+# Threshold informed by Phase 3-2 A1 measured score ladder (>=0.725 all correct / <=0.518 all wrong, grey in between). 0.55 is strict:
+# O4 prefers AMBIGUOUS (escalate to human) over a misclassified origin that auto-fixes. **Until calibrated on real violations,
+# realign's apply defaults to False** (silent-drift discipline; current audit shows 0 violations so no calibration data yet).
 ORIGIN_ORACLE_MIN_SIM = 0.55
 
 
 class NoteRefIntegrityError(ValueError):
-    """KGNode.note_ref_id 违反不变量(chapter 错配 / dangling)。backfill pre-flight 早停用。"""
+    """KGNode.note_ref_id violates the invariant (chapter misalignment / dangling). Used to early-abort backfill pre-flight."""
 
 
 @dataclass
@@ -481,21 +484,21 @@ class NoteRefViolation:
     label: str
     node_chapter: str
     ref_note_id: int
-    ref_note_chapter: str | None      # None = dangling(ref id 无对应 Note)
-    sim_ref: float                    # label 在 ref-Note 的 oracle 命中(dangling→ -1.0)
-    sim_chap: float                   # label 在 node.chapter 对应 Note 的命中(无该 Note→ -1.0)
-    chap_note_id: int | None          # node.chapter 当前对应 Note id(无→None)
+    ref_note_chapter: str | None      # None = dangling (ref id has no matching Note)
+    sim_ref: float                    # label's oracle hit against ref-Note (dangling -> -1.0)
+    sim_chap: float                   # label's hit against the Note that owns node.chapter (no such Note -> -1.0)
+    chap_note_id: int | None          # current Note id corresponding to node.chapter (None if absent)
     origin: str                       # 'A_idreuse'|'B_relabel'|'AMBIGUOUS'|'NO_TARGET'
 
 
 @dataclass
 class ReAlignReport:
-    fixed: list[int]                  # 实际改了 note_ref 的 node id(仅 A_idreuse)
-    needs_human: list[NoteRefViolation]   # B/AMBIGUOUS/NO_TARGET,未动数据
+    fixed: list[int]                  # node ids whose note_ref was actually modified (only A_idreuse)
+    needs_human: list[NoteRefViolation]   # B/AMBIGUOUS/NO_TARGET, data left untouched
 
 
 def _default_oracle(note_content_md: str, label: str, model) -> float:
-    """label 与 Note headings 的最大 cosine。复用 Phase 3-2 A1 同款本地 embedding。"""
+    """Max cosine between label and Note headings. Reuses the same local embedding as Phase 3-2 A1."""
     from sentence_transformers import util
     heads = [h for h, _ in parse_markdown_sections(note_content_md)]
     if not heads:
@@ -506,14 +509,15 @@ def _default_oracle(note_content_md: str, label: str, model) -> float:
 
 
 def classify_note_ref_violations(db, document_id, *, oracle=None, model=None):
-    """唯一判定入口。validate(detect)与 realign(fix)都【只】调它 —— 单一独立信号源,
-    杜绝两边各算一份后漂移(§29 #2 教训:共享判定是 soundness 前提非洁癖)。
+    """Sole classification entry point. Both validate (detect) and realign (fix) call ONLY this --
+    single independent signal source, preventing the two paths from drifting after computing
+    their own (section 29 #2 lesson: shared classification is a soundness prerequisite, not OCD).
 
-    document_id=None:镜像 backfill 全库语义,在函数内封口静默旁路(B2 防御纵深)。
-    oracle: 可注入 (note_md, label) -> float;None 用 _default_oracle(测试注入确定性桩)。
+    document_id=None: mirror backfill's whole-DB semantics; the bypass is sealed inside this function (B2 defense in depth).
+    oracle: injectable (note_md, label) -> float; None uses _default_oracle (tests inject deterministic stubs).
     """
     if document_id is None:
-        # Δ3:模型在 None-branch 提前建一次,别让每个子调用重建 ~80MB MiniLM
+        # Delta-3: build the model once at the top of the None-branch; do not let each sub-call rebuild ~80MB MiniLM
         if oracle is None and model is None:
             from sentence_transformers import SentenceTransformer
             model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -533,14 +537,14 @@ def classify_note_ref_violations(db, document_id, *, oracle=None, model=None):
         n.id: n
         for n in db.query(Note).filter(Note.document_id == document_id)
     }
-    # 同章多 Note 取 max id。**刻意选择,非"与 backfill 一致"**(实测无 canonical-Note
-    # 概念:backfill 跟 FK 不挑 Note,routes_domain order desc 仅 list 展示)。理由:
-    # A_idreuse 节点 ref 本就坏,换任一同章 Note 都是改善;不影响 chapter 正确性
-    # (任一同章 Note 皆合法 home);落到该章哪个 Note 哪 section 由 max-id 决定,
-    # 属可接受的策略选择(max-id = 该章最近一次 study_book run)。ch1.3 实测 8 Note/章。
+    # Multiple Notes per chapter: pick max id. **Deliberate choice, NOT "to match backfill"** (in practice there is no
+    # canonical-Note concept: backfill follows FK without picking a Note, routes_domain order desc is just for list display). Rationale:
+    # A_idreuse nodes already have a broken ref; swapping to any Note of the same chapter is an improvement and does not affect chapter correctness
+    # (any same-chapter Note is a legal home); which Note/section of that chapter we land on is determined by max-id,
+    # which is an acceptable policy choice (max-id = the most recent study_book run for that chapter). ch1.3 has 8 Notes/chapter observed.
     chap_note = {}
     for n in sorted(notes.values(), key=lambda x: x.id):
-        chap_note[n.chapter_id] = n   # 升序后写覆盖 = 最终留 max id
+        chap_note[n.chapter_id] = n   # Ascending order + overwrite-on-write = final value is max id
 
     out = []
     for node in db.query(KGNode).filter(KGNode.document_id == document_id):
@@ -548,7 +552,7 @@ def classify_note_ref_violations(db, document_id, *, oracle=None, model=None):
             continue
         ref = notes.get(node.note_ref_id)
         if ref is not None and ref.chapter_id == node.chapter_id:
-            continue   # 不变量成立,非 violation
+            continue   # Invariant holds, not a violation
 
         chap_n = chap_note.get(node.chapter_id)
         sim_ref = oracle(ref.content_md, node.label) if ref is not None else -1.0
@@ -574,8 +578,8 @@ def classify_note_ref_violations(db, document_id, *, oracle=None, model=None):
 
 
 def validate_note_refs(db, document_id, *, oracle=None, model=None) -> None:
-    """detect-only。有 violation 即 raise,报告带 origin + 双侧 sim 证据。
-    不分类去修、不动数据 —— gate 只喊不擅改 KG(Eval 1 同纪律)。"""
+    """Detect-only. Raises if any violation exists; the report includes origin + both-side sim evidence.
+    Does not classify-and-fix, does not mutate data -- gate only shouts, never patches the KG (same discipline as Eval 1)."""
     vs = classify_note_ref_violations(db, document_id, oracle=oracle, model=model)
     if not vs:
         return
@@ -592,12 +596,12 @@ def validate_note_refs(db, document_id, *, oracle=None, model=None) -> None:
 
 
 def realign_note_refs(db, document_id, *, apply=False, oracle=None, model=None) -> ReAlignReport:
-    """仅 origin==A_idreuse 在 apply=True 时重派生 note_ref→chapter 对应 Note,
-    并清 note_anchor_slug/cross_note_*(强制 backfill 重算,非破坏 ratchet)。
-    B_relabel/AMBIGUOUS/NO_TARGET:不动数据,进 needs_human。
+    """Only origin==A_idreuse: when apply=True, re-derive note_ref to the Note that owns the chapter,
+    and clear note_anchor_slug / cross_note_* (forces backfill to recompute, non-destructive ratchet).
+    B_relabel / AMBIGUOUS / NO_TARGET: data left untouched, queued into needs_human.
 
-    【不 commit】:库 mutator 不持事务边界,commit 归调用方(audit --fix 后显式)。
-    apply 默认 False:阈值未标定前只 dry-run(首个真实 violation = 标定触发点)。
+    [No commit]: this DB mutator does not hold transaction boundaries; commit is the caller's responsibility (audit --fix commits explicitly).
+    apply defaults to False: until the threshold is calibrated, only dry-run (the first real violation = calibration trigger).
     """
     vs = classify_note_ref_violations(db, document_id, oracle=oracle, model=model)
     fixed, human = [], []
@@ -612,5 +616,5 @@ def realign_note_refs(db, document_id, *, apply=False, oracle=None, model=None) 
                 fixed.append(v.node_id)
         else:
             human.append(v)
-    db.flush()   # 让 caller 可见改动;commit 归 caller
+    db.flush()   # Make mutations visible to caller; commit is caller's job
     return ReAlignReport(fixed=fixed, needs_human=human)
