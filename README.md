@@ -279,14 +279,3 @@ Optional extra cleanup:
 ## License
 
 [MIT](LICENSE) © 2026 liutao
-
----
-
-## Acknowledgements
-
-Inspiration and references:
-- [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent)
-  — architectural inspiration: clone-and-run distribution model,
-  centralized prompt management pattern, tool guardrail concepts. The
-  LangGraph orchestration here is independent — Hermes uses a
-  hand-rolled agent loop, not LangGraph.
